@@ -8,6 +8,7 @@ export default function LayersPanel({
   layers,
   activeId,
   counts,
+  disabled,
   onSelect,
   onToggle,
   onRename,
@@ -19,6 +20,7 @@ export default function LayersPanel({
   layers: Layer[];
   activeId: string;
   counts: Record<string, number>;
+  disabled?: boolean;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -38,7 +40,8 @@ export default function LayersPanel({
   }
 
   return (
-    <div className="absolute right-4 top-1/2 z-20 flex max-h-[55vh] w-60 -translate-y-1/2 flex-col rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+    <div inert={disabled} className="absolute right-4 top-1/2 z-20 flex max-h-[55vh] w-60 -translate-y-1/2 flex-col rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+      {disabled && <div title="Doodle is working…" className="absolute inset-0 z-10 cursor-wait rounded-2xl bg-white/40 dark:bg-black/30" />}
       <div className="flex items-center justify-between border-b border-gray-100 p-2.5 dark:border-neutral-700">
         <span className="text-sm font-medium">Layers ({layers.length})</span>
         <div className="flex gap-1">

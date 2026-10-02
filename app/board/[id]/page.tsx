@@ -26,7 +26,7 @@ import {
 } from "@/lib/drawings";
 import { contextLimit, estimateTokens, formatTokens } from "@/lib/context";
 import { sanitizeSvgInner } from "@/lib/svg";
-import { downloadJpg, downloadPdf, downloadPng, downloadSvg, opsToSvg, rasterize } from "@/lib/export";
+import { downloadChat, downloadJpg, downloadPdf, downloadPng, downloadSvg, opsToSvg, rasterize } from "@/lib/export";
 import { BgImage, fileToBg, fitBg } from "@/lib/image";
 import { applySettings, loadSettings, saveSettings } from "@/lib/settings";
 import ChatText from "@/app/components/ChatText";
@@ -678,6 +678,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     setOps((prev) => prev.filter((o) => !o.key || !goneKeys.has(o.key)));
     setRedoStack([]);
     setEditBackup(null);
+    setFrameLabel("layer deleted");
     if (activeRef.current === id) {
       const rest = layers.filter((l) => l.id !== id);
       setActiveLayerId(rest[0]?.id || "");
@@ -697,9 +698,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   function onDown(e: React.PointerEvent) {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
+    // locked while doodle works, panning still allowed
+    const wantPan = tool === "hand" || spaceDown.current || e.button === 1;
+    if (busy && !wantPan) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     // hand tool, space bar, or middle click pans instead of drawing
-    if (tool === "hand" || spaceDown.current || e.button === 1) {
+    if (wantPan) {
       if (e.button === 1) e.preventDefault();
       panStart.current = { x: e.clientX, y: e.clientY };
       return;
@@ -768,6 +772,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const op = draftToOp(draft);
       if (op) pushOp(op);
     }
+    setFrameLabel("you drew");
     setDraft(null);
   }
 
@@ -782,6 +787,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         size: Math.min(120, Math.max(16, width * 8)),
         content: textValue.trim().slice(0, 120),
       });
+      setFrameLabel("you wrote");
     }
     setTextAt(null);
     setTextValue("");
@@ -821,6 +827,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const last = ops[ops.length - 1];
     setOps(ops.slice(0, -1));
     setRedoStack([...redoStack, last]);
+    setFrameLabel("undone");
   }
 
   function redo() {
@@ -829,6 +836,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const last = redoStack[redoStack.length - 1];
     setOps([...ops, last]);
     setRedoStack(redoStack.slice(0, -1));
+    setFrameLabel("redone");
   }
 
   // asking AI, plan describes while build draws
@@ -852,6 +860,45 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   const stageTimers = useRef<number[]>([]);
   // staged agent status, cleared on finish
   const [busyStage, setBusyStage] = useState("");
+  // edit timeline: snapshots of ops plus layers, session only
+  type Frame = { id: number; at: number; label: string; ops: DrawOp[]; layers: Layer[] };
+  const [frames, setFrames] = useState<Frame[]>([]);
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [frameLabel, setFrameLabel] = useState("opened");  const frameTimer = useRef(0);
+  // live mirrors for the debounced snapshotter
+  const opsRef = useRef<DrawOp[]>([]);
+  const layersRef = useRef<Layer[]>([]);
+  useEffect(() => {
+    opsRef.current = ops;
+    layersRef.current = layers;
+  }, [ops, layers]);
+
+  // snapshotting a frame when edits settle, capped at 24
+  useEffect(() => {
+    if (!ready) return;
+    window.clearTimeout(frameTimer.current);
+    frameTimer.current = window.setTimeout(() => {
+      const o = opsRef.current;
+      const l = layersRef.current;
+      const at = Date.now();
+      setFrames((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.ops === o) return prev;
+        return [...prev, { id: (last?.id || 0) + 1, at, label: frameLabel, ops: o, layers: l }].slice(-24);
+      });
+    }, 2500);
+    return () => window.clearTimeout(frameTimer.current);
+  }, [ops, layers, ready, frameLabel]);
+
+  // restoring a frame onto the board, old canvas kept under undo edit
+  function restoreFrame(f: Frame) {
+    if (busy) return;
+    setEditBackup(ops);
+    setOps(f.ops);
+    setLayers(f.layers);
+    setRedoStack([]);
+    setFrameLabel("restored frame");
+  }
   // ghost cursor showing where doodle is drawing, board coords
   const [aiCursor, setAiCursor] = useState<{ x: number; y: number } | null>(null);
 
@@ -1102,12 +1149,14 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
               );
               setOps([...kept, art]);
               setRedoStack([]);
+              setFrameLabel("Doodle edited");
               // flashing the cursor where the new artwork lands
               setAiCursor({ x: 500, y: 500 });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
               setMsgs((m) => [...m, { me: false, text: "updated the artwork", via }]);
             } else {
               pushOp({ op: "svg", tool: "brush", markup: clean });
+              setFrameLabel("Doodle drew");
               setAiCursor({ x: 500, y: 500 });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
               setMsgs((m) => [...m, { me: false, text: "added 1 artwork", via }]);
@@ -1134,6 +1183,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             );
             setOps(keyed);
             setRedoStack([]);
+            setFrameLabel("Doodle edited");
             // flashing the cursor over the edited area
             const [ex, ey] = opAnchor(keyed[0]);
             setAiCursor({ x: ex, y: ey });
@@ -1152,6 +1202,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             });
             if (newOps.length) {
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), newOps.length * 250 + 600));
+              setFrameLabel("Doodle drew");
               setMsgs((m) => [...m, { me: false, text: `added ${newOps.length} strokes`, via }]);
             } else if (!say) setMsgs((m) => [...m, { me: false, text: "nothing came back, try rephrasing", via }]);
           }
@@ -1659,6 +1710,16 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             </div>
             <div className="flex gap-1">
               <button
+                onClick={() => downloadChat(title || "Untitled", msgs)}
+                title="export chat as markdown"
+                aria-label="export chat as markdown"
+                className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black dark:hover:bg-neutral-800 dark:hover:text-white"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                </svg>
+              </button>
+              <button
                 onClick={toggleVoiceOut}
                 title={voiceOut ? "mute replies" : "read replies aloud"}
                 aria-label={voiceOut ? "mute replies" : "read replies aloud"}
@@ -1908,6 +1969,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           layers={layers}
           activeId={activeLayerId}
           counts={layerCounts}
+          disabled={busy}
           onSelect={setActiveLayerId}
           onToggle={toggleLayer}
           onRename={renameLayer}
@@ -1916,6 +1978,45 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           onMove={moveLayer}
           onClose={() => setLayersOpen(false)}
         />
+      )}
+
+      {/* edit timeline strip above the toolbar */}
+      {timelineOpen && (
+        <div className="absolute bottom-24 left-1/2 z-20 max-w-[94vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 p-2 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+          <div className="mb-1.5 flex items-center justify-between px-1">
+            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              {frames.length ? `${frames.length} frames, tap one to restore` : "frames appear as you draw"}
+            </span>
+            <button
+              onClick={() => setTimelineOpen(false)}
+              aria-label="close timeline"
+              className="rounded-lg p-0.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="flex max-w-[90vw] gap-2 overflow-x-auto pb-1">
+            {frames.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => restoreFrame(f)}
+                disabled={busy}
+                title={`restore: ${f.label}`}
+                className="w-28 shrink-0 overflow-hidden rounded-xl border border-gray-200 transition-all hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 dark:border-neutral-700"
+              >
+                <svg viewBox="0 0 1000 1000" className="h-16 w-full bg-white dark:bg-neutral-800">
+                  {orderedVisibleOps(f.ops, f.layers).slice(0, 30).map((o, i) => opNode(o, `t${f.id}-${i}`))}
+                </svg>
+                <span className="block truncate px-1.5 py-1 text-left text-[11px]">
+                  <span className="font-medium">{f.label}</span>
+                  <span className="block text-gray-400">{new Date(f.at).toLocaleTimeString()}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* background photo chip with remove */}
@@ -1937,8 +2038,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         </div>
       )}
 
-      {/* bottom floating toolbar */}
-      <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[96vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+      {/* bottom floating toolbar, locked while doodle works */}
+      <div
+        inert={busy}
+        className={`absolute bottom-4 left-1/2 z-20 flex max-w-[96vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur transition-opacity dark:border-neutral-700 dark:bg-neutral-900 ${busy ? "opacity-70" : ""}`}
+      >
+        {busy && <div title="Doodle is working…" className="absolute inset-0 z-10 cursor-wait rounded-2xl" />}
         <button onClick={() => setTool("brush")} title="brush" className={toolBtn(tool === "brush")} aria-label="brush" aria-pressed={tool === "brush"}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" />
@@ -2031,6 +2136,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             <path d="m3 17 9 5 9-5" />
           </svg>
         </button>
+        <button onClick={() => setTimelineOpen((v) => !v)} title="edit timeline" className={toolBtn(timelineOpen)} aria-label="edit timeline" aria-pressed={timelineOpen} aria-expanded={timelineOpen}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />
+            <path d="M12 7v5l3 3" />
+          </svg>
+        </button>
         <button onClick={() => fileRef.current?.click()} title={bg ? "replace background photo" : "add background photo to trace"} className={toolBtn(false)} aria-label="background photo">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -2110,7 +2221,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             <path d="M21 7v6h-6M3 17a9 9 0 0 1 15-6.7L21 13" />
           </svg>
         </button>
-        <button onClick={() => { setOps([]); setRedoStack([]); setLayers((prev) => prev.map((l) => ({ ...l, keys: [] }))); }} disabled={ops.length === 0} title="clear board" className="rounded-lg p-2 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:hover:bg-red-950" aria-label="clear board">
+        <button onClick={() => { setOps([]); setRedoStack([]); setLayers((prev) => prev.map((l) => ({ ...l, keys: [] }))); setFrameLabel("cleared"); }} disabled={ops.length === 0} title="clear board" className="rounded-lg p-2 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:hover:bg-red-950" aria-label="clear board">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
           </svg>

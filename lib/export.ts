@@ -1,5 +1,5 @@
 // turning ops into downloadable files, no extra libs needed
-import { arrowHead, brushPasses, orderedVisibleOps, starPoints, triPoints, type Drawing, type DrawOp } from "./drawings";
+import { arrowHead, brushPasses, orderedVisibleOps, starPoints, triPoints, type ChatMsg, type Drawing, type DrawOp } from "./drawings";
 import { fitBg } from "./image";
 import { sanitizeSvgInner } from "./svg";
 
@@ -126,6 +126,22 @@ export async function downloadPng(d: Drawing) {
   const c = await rasterize(opsToSvg(d), 2000);
   const blob = await new Promise<Blob | null>((resolve) => c.toBlob(resolve, "image/png"));
   if (blob) trigger(URL.createObjectURL(blob), fileName(d.title, "png"));
+}
+
+// chat transcript as markdown
+export function chatToMd(title: string, msgs: ChatMsg[]): string {
+  const lines = [`# ${title.trim() || "Untitled"} — ChatSketch chat`, ""];
+  for (const m of msgs) {
+    lines.push(`**${m.me ? "You" : "Doodle"}:** ${m.text}`);
+    if (!m.me && m.via) lines.push(`_via ${m.via}_`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+export function downloadChat(title: string, msgs: ChatMsg[]) {
+  const blob = new Blob([chatToMd(title, msgs)], { type: "text/markdown" });
+  trigger(URL.createObjectURL(blob), fileName(title.trim() || "Untitled", "md"));
 }
 
 // tiny one-image pdf writer, so we need no pdf library
