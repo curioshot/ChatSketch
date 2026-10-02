@@ -21,7 +21,7 @@ export type DrawOp =
 export type Layer = { id: string; name: string; visible: boolean; keys: string[] };
 
 export type ChatMsg = { me: boolean; text: string; questions?: PlanQuestion[]; done?: boolean; via?: string };
-export type Intent = "plan" | "build";
+export type Intent = "plan" | "build" | "refine";
 
 // one clarifying question from plan mode
 export type PlanQuestion = {

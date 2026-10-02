@@ -47,6 +47,46 @@ async function anthropicText(
   return typeof block?.text === "string" ? block.text : null;
 }
 
+// anthropic vision call with a base64 screenshot alongside the request
+async function anthropicVision(
+  key: string,
+  model: string,
+  sys: string,
+  history: { role: string; content: string }[],
+  shotText: string,
+  imageB64: string
+): Promise<string | null> {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      system: sys,
+      messages: [
+        ...history,
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imageB64 } },
+            { type: "text", text: shotText },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const block = Array.isArray(data?.content)
+    ? data.content.find((b: { type?: string; text?: string }) => b.type === "text")
+    : null;
+  return typeof block?.text === "string" ? block.text : null;
+}
+
 // keeping only real turns, newest last, capped so prompts stay small
 // our own status lines ("added 3 strokes") carry no meaning for the model
 const STATUS_LINE = /^(added \d+ (strokes|artwork)|nothing came back|no plan came back)/i;
@@ -206,7 +246,7 @@ export async function POST(req: Request) {
   const key = String(body.apiKey || "").trim() || ENV_KEY;
   const model = String(body.model || "").trim() || ENV_MODEL;
   const base = resolveBase(provider, String(body.baseUrl || ""));
-  const intent = body.intent === "plan" ? "plan" : "build";
+  const intent = body.intent === "plan" ? "plan" : body.intent === "refine" ? "refine" : ("build" as const);
   const history = cleanHistory(body.history);
 
   // current canvas for edits, trimmed so prompts stay small
@@ -246,6 +286,9 @@ export async function POST(req: Request) {
     if (intent === "plan") {
       const mock = mockPlan();
       return NextResponse.json({ mode, ops: [], plan: mock.plan, questions: mock.questions, source: "mock" });
+    }
+    if (intent === "refine") {
+      return NextResponse.json({ mode, ops: [], say: "Vision refine needs an API key — add one in Settings, then try again.", source: "mock" });
     }
     if (mode === "svg") {
       return NextResponse.json({ mode, ops: [], svg: mockSvg(prompt), source: "mock" });
@@ -311,16 +354,50 @@ Current canvas ops: ${canvas.length ? JSON.stringify(canvas).slice(0, 6000) : "e
 If the user asks to change the existing drawing (bigger, move, recolor, remove, add to it), return the COMPLETE new ops array including kept strokes, and set "replace": true. Otherwise return only the new strokes with "replace": false. Kept strokes must keep their exact "key" so layers survive.
 If the user greets you, asks who you are, or asks anything non-drawing, return {"mode":"${mode}","ops":[],"say":"your short answer as Doodle"} instead.`;
 
+  // screenshot for the vision loop, data url jpeg
+  const image = String(body.image || "");
+  if (intent === "refine" && (!image.startsWith("data:image/") || image.length > 3000000)) {
+    return NextResponse.json({ mode, ops: [], say: "Could not read the board screenshot, try again.", source: "mock" });
+  }
+  const imageB64 = image.includes(",") ? image.split(",")[1] : image;
+
+  // refine prompt: look at the screenshot, return the corrected full canvas
+  const refineSystem = `${identity}
+You see a screenshot of the user's current canvas plus their original request below. Reply with JSON only, no other text.
+Shape: {"mode":"${mode}","ops":[...],"replace":true}
+Each op is one of:
+{"op":"line","tool":"brush","color":"#ff0000","strokeWidth":5,"from":[x,y],"to":[x,y]}
+{"op":"polyline","tool":"brush","color":"#ff0000","strokeWidth":5,"points":[[x,y],[x,y]]}
+{"op":"bezier","tool":"brush","color":"#ff0000","strokeWidth":4,"from":[x,y],"cp1":[x,y],"cp2":[x,y],"to":[x,y]}
+{"op":"circle","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"r":80}
+{"op":"rect","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"w":200,"h":120}
+{"op":"text","tool":"brush","color":"#ff0000","center":[x,y],"size":40,"content":"hello"}
+{"op":"ellipse","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"rx":100,"ry":60}
+{"op":"triangle","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"w":160,"h":140}
+{"op":"star","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"r":90}
+{"op":"arrow","tool":"brush","color":"#ff0000","strokeWidth":5,"from":[x,y],"to":[x,y]}
+Keep coords 0-1000, max 30 ops. Return the COMPLETE corrected canvas: keep good strokes with exact keys, fix proportions, alignment, gaps and colors to match the request. Always set "replace": true. If nothing needs fixing, echo the canvas ops unchanged.`;
+
   try {
     // svg mode gets raw markup, everything else gets ops json
-    const wantSvg = mode === "svg" && intent === "build";
+    const wantSvg = mode === "svg" && (intent === "build" || intent === "refine");
+    // vision user block: screenshot plus request text
+    const visionText = `Original request: ${prompt || "improve this drawing"}. The screenshot shows the current canvas.`;
     // anthropic speaks its own messages format
     let text = "";
     if (provider === "anthropic") {
-      const sys = intent === "plan" ? planSystem : wantSvg ? svgSystem : system;
-      text = (await anthropicText(key, model, sys, history, prompt)) || "";
+      const sys = intent === "plan" ? planSystem : wantSvg ? svgSystem : intent === "refine" ? refineSystem : system;
+      if (intent === "refine") {
+        text = (await anthropicVision(key, model, sys, history, visionText, imageB64)) || "";
+      } else {
+        text = (await anthropicText(key, model, sys, history, prompt)) || "";
+      }
     } else {
-      const sys = intent === "plan" ? planSystem : wantSvg ? svgSystem : system;
+      const sys = intent === "plan" ? planSystem : wantSvg ? svgSystem : intent === "refine" ? refineSystem : system;
+      const userBlock =
+        intent === "refine"
+          ? [{ role: "user", content: [{ type: "text", text: visionText }, { type: "image_url", image_url: { url: image } }] }]
+          : [{ role: "user", content: prompt }];
       const chatBody =
         intent === "plan"
           ? {
@@ -334,9 +411,9 @@ If the user greets you, asks who you are, or asks anything non-drawing, return {
               messages: [
                 { role: "system", content: sys },
                 ...history.map((h) => ({ role: h.role, content: h.content })),
-                { role: "user", content: prompt },
+                ...userBlock,
               ],
-              temperature: wantSvg ? 0.4 : 0.2,
+              temperature: wantSvg || intent === "refine" ? 0.4 : 0.2,
               max_tokens: 2000,
             };
       const res = await fetch(`${base}/chat/completions`, {
@@ -387,7 +464,8 @@ If the user greets you, asks who you are, or asks anything non-drawing, return {
     const ops = cleanOps(parsed.ops);
     // short spoken reply for greetings and questions, shown in chat
     const say = typeof parsed.say === "string" ? parsed.say.trim().slice(0, 500) : "";
-    const replace = parsed.replace === true;
+    // refine always replaces: the model returns the whole corrected canvas
+    const replace = intent === "refine" ? ops.length > 0 : parsed.replace === true;
     if (!ops.length && !say) {
       return NextResponse.json({ mode, ops: mockOps(prompt), source: "mock" });
     }
