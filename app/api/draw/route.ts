@@ -126,7 +126,7 @@ function cleanOps(raw: unknown): unknown[] {
     if (!o || typeof o !== "object") continue;
     const m = o as Record<string, unknown>;
     const kind = String(m.op || "");
-    if (!["line", "polyline", "bezier", "circle", "rect", "text", "svg"].includes(kind)) continue;
+    if (!["line", "polyline", "bezier", "circle", "rect", "text", "svg", "ellipse", "triangle", "star", "arrow"].includes(kind)) continue;
     if (kind === "svg") {
       const cleaned = lightCleanSvg(String(m.markup || ""));
       if (!cleaned) continue;
@@ -161,6 +161,17 @@ function cleanOps(raw: unknown): unknown[] {
       });
     } else if (kind === "circle") {
       out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [500, 500]), r: cleanNum(m.r, 60, 500) });
+    } else if (kind === "ellipse") {
+      out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [500, 500]), rx: cleanNum(m.rx, 80, 500), ry: cleanNum(m.ry, 50, 500) });
+    } else if (kind === "triangle") {
+      out.push({
+        ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [500, 500]),
+        w: cleanNum(m.w, 120, 1000), h: cleanNum(m.h, 100, 1000),
+      });
+    } else if (kind === "star") {
+      out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [500, 500]), r: cleanNum(m.r, 70, 500) });
+    } else if (kind === "arrow") {
+      out.push({ ...base, strokeWidth, from: cleanPoint(m.from, [400, 500]), to: cleanPoint(m.to, [600, 500]) });
     } else {
       out.push({
         ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [500, 500]),
@@ -291,6 +302,10 @@ Each op is one of:
 {"op":"circle","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"r":80}
 {"op":"rect","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"w":200,"h":120}
 {"op":"text","tool":"brush","color":"#ff0000","center":[x,y],"size":40,"content":"hello"}
+{"op":"ellipse","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"rx":100,"ry":60}
+{"op":"triangle","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"w":160,"h":140}
+{"op":"star","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"r":90}
+{"op":"arrow","tool":"brush","color":"#ff0000","strokeWidth":5,"from":[x,y],"to":[x,y]}
 Keep coords 0-1000, max 20 ops, centered composition.
 Current canvas ops: ${canvas.length ? JSON.stringify(canvas).slice(0, 6000) : "empty"}.
 If the user asks to change the existing drawing (bigger, move, recolor, remove, add to it), return the COMPLETE new ops array including kept strokes, and set "replace": true. Otherwise return only the new strokes with "replace": false. Kept strokes must keep their exact "key" so layers survive.

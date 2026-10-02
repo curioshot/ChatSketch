@@ -113,6 +113,23 @@ function McqSet({
   );
 }
 
+// minimal speech recognition shapes, browsers differ on names
+type SpeechTalkerEvent = {
+  resultIndex: number;
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+};
+type SpeechTalker = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((e: SpeechTalkerEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type SpeechTalkerCtor = new () => SpeechTalker;
+
 // in-progress stroke, committed as one op on release so lines stay smooth
 type Draft =
   | { kind: "free"; points: [number, number][] }
@@ -174,6 +191,21 @@ export default function BoardPage() {
   // left chat open or not
   const [chatOpen, setChatOpen] = useState(true);
   const [prompt, setPrompt] = useState("");
+  // voice dictation state, only when the browser allows it
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceOk, setVoiceOk] = useState(false);
+  const recRef = useRef<SpeechTalker | null>(null);
+
+  // checking mic support after mount, ssr has no window
+  useEffect(() => {
+    const w = window as unknown as { SpeechRecognition?: SpeechTalkerCtor; webkitSpeechRecognition?: SpeechTalkerCtor };
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setVoiceOk(Boolean(w.SpeechRecognition || w.webkitSpeechRecognition));
+    return () => {
+      recRef.current?.stop();
+      recRef.current = null;
+    };
+  }, []);
   // session chat, restored per drawing below
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   // plan just describes, build draws
@@ -266,6 +298,31 @@ export default function BoardPage() {
       const y = o.center[1] - o.h / 2;
       if (o.fill) ctx.fillRect(x, y, o.w, o.h);
       else ctx.strokeRect(x, y, o.w, o.h);
+    } else if (o.op === "ellipse") {
+      ctx.beginPath();
+      ctx.ellipse(o.center[0], o.center[1], Math.max(1, o.rx), Math.max(1, o.ry), 0, 0, Math.PI * 2);
+      if (o.fill) ctx.fill();
+      else ctx.stroke();
+    } else if (o.op === "triangle" || o.op === "star") {
+      const pts = o.op === "triangle"
+        ? triPoints(o.center[0], o.center[1], o.w, o.h)
+        : starPoints(o.center[0], o.center[1], o.r);
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p[0], p[1]);
+        else ctx.lineTo(p[0], p[1]);
+      });
+      ctx.closePath();
+      if (o.fill) ctx.fill();
+      else ctx.stroke();
+    } else if (o.op === "arrow") {
+      const [h1, h2] = arrowHead(o.from, o.to, o.strokeWidth);
+      ctx.moveTo(o.from[0], o.from[1]);
+      ctx.lineTo(o.to[0], o.to[1]);
+      ctx.moveTo(h1[0], h1[1]);
+      ctx.lineTo(o.to[0], o.to[1]);
+      ctx.lineTo(h2[0], h2[1]);
+      ctx.stroke();
     } else {
       ctx.font = `${o.size}px system-ui, sans-serif`;
       ctx.textAlign = "center";
@@ -695,6 +752,12 @@ export default function BoardPage() {
   // asking AI, plan describes while build draws
   async function askAi() {
     if (!prompt.trim() || busy) return;
+    // stopping dictation so it never talks over the send
+    if (recRef.current) {
+      recRef.current.stop();
+      recRef.current = null;
+      setVoiceOn(false);
+    }
     const q = prompt.trim();
     setPrompt("");
     sendText(q);
@@ -712,9 +775,9 @@ export default function BoardPage() {
 
   // first point of an op, where the cursor jumps to
   function opAnchor(o: DrawOp): [number, number] {
-    if (o.op === "line" || o.op === "bezier") return o.from;
+    if (o.op === "line" || o.op === "bezier" || o.op === "arrow") return o.from;
     if (o.op === "polyline") return o.points[0] || [500, 500];
-    if (o.op === "circle" || o.op === "rect" || o.op === "text") return o.center;
+    if (o.op === "circle" || o.op === "rect" || o.op === "text" || o.op === "ellipse" || o.op === "triangle" || o.op === "star") return o.center;
     return [500, 500];
   }
   // chat scroll container for autoscroll
@@ -758,6 +821,45 @@ export default function BoardPage() {
     if (busy) return;
     const last = [...msgs].reverse().find((m) => m.me);
     if (last) sendText(last.text);
+  }
+
+  // toggling mic dictation straight into the chat box
+  function toggleVoice() {
+    if (voiceOn) {
+      recRef.current?.stop();
+      recRef.current = null;
+      setVoiceOn(false);
+      return;
+    }
+    const w = window as unknown as { SpeechRecognition?: SpeechTalkerCtor; webkitSpeechRecognition?: SpeechTalkerCtor };
+    const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = navigator.language || "en-US";
+    rec.onresult = (e) => {
+      let text = "";
+      for (let i = 0; i < e.results.length; i++) {
+        text += e.results[i][0].transcript;
+      }
+      setPrompt(text.trim());
+    };
+    rec.onerror = () => {
+      recRef.current = null;
+      setVoiceOn(false);
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setVoiceOn(false);
+    };
+    try {
+      rec.start();
+      recRef.current = rec;
+      setVoiceOn(true);
+    } catch {
+      // mic blocked, staying quiet
+    }
   }
 
   // copying an assistant reply
@@ -1004,6 +1106,24 @@ export default function BoardPage() {
         return <circle key={k} cx={o.center[0]} cy={o.center[1]} r={o.r} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} {...dash} />;
       if (o.op === "rect")
         return <rect key={k} x={o.center[0] - o.w / 2} y={o.center[1] - o.h / 2} width={o.w} height={o.h} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} {...dash} />;
+      if (o.op === "ellipse")
+        return <ellipse key={k} cx={o.center[0]} cy={o.center[1]} rx={Math.max(1, o.rx)} ry={Math.max(1, o.ry)} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} {...dash} />;
+      if (o.op === "triangle" || o.op === "star") {
+        const pts = (o.op === "triangle"
+          ? triPoints(o.center[0], o.center[1], o.w, o.h)
+          : starPoints(o.center[0], o.center[1], o.r)
+        ).map((p) => p.join(",")).join(" ");
+        return <polygon key={k} points={pts} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} strokeLinejoin="round" {...op} {...dash} />;
+      }
+      if (o.op === "arrow") {
+        const [h1, h2] = arrowHead(o.from, o.to, o.strokeWidth);
+        return (
+          <g key={k} stroke={col} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" fill="none" {...op} {...dash}>
+            <line x1={o.from[0]} y1={o.from[1]} x2={o.to[0]} y2={o.to[1]} />
+            <path d={`M${h1[0]} ${h1[1]} L${o.to[0]} ${o.to[1]} L${h2[0]} ${h2[1]}`} />
+          </g>
+        );
+      }
       return <text key={k} x={o.center[0]} y={o.center[1]} fontSize={o.size} fill={col} textAnchor="middle" dominantBaseline="central">{o.content}</text>;
     };
     if (passes.length === 1) return one(passes[0].wMul, passes[0].alpha, i);
@@ -1392,6 +1512,20 @@ export default function BoardPage() {
               aria-label="ask AI to draw"
               className="flex-1 rounded-full border border-gray-200 px-3 py-1.5 text-sm outline-none transition-colors focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
             />
+            {voiceOk && (
+              <button
+                onClick={toggleVoice}
+                title={voiceOn ? "stop dictation" : "dictate with mic"}
+                aria-label={voiceOn ? "stop dictation" : "dictate with mic"}
+                aria-pressed={voiceOn}
+                className={`shrink-0 rounded-full p-2 transition-colors ${voiceOn ? "bg-red-600 text-white" : "hover:bg-gray-100 dark:hover:bg-neutral-800"}`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={voiceOn ? "animate-pulse" : ""}>
+                  <rect x="9" y="2" width="6" height="12" rx="3" />
+                  <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
+                </svg>
+              </button>
+            )}
             {busy ? (
               <button onClick={stop} className="rounded-full bg-red-600 px-3 py-1.5 text-sm text-white transition-opacity hover:opacity-90" aria-label="stop generating" title="stop generating">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -1484,15 +1618,48 @@ export default function BoardPage() {
             <path d="M5 6V4h14v2M12 4v16m-3 0h6" />
           </svg>
         </button>
+        <button onClick={() => setTool("ellipse")} title="ellipse" className={toolBtn(tool === "ellipse")} aria-label="ellipse" aria-pressed={tool === "ellipse"}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <ellipse cx="12" cy="12" rx="8" ry="5.5" />
+          </svg>
+        </button>
+        <button onClick={() => setTool("triangle")} title="triangle" className={toolBtn(tool === "triangle")} aria-label="triangle" aria-pressed={tool === "triangle"}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <path d="M12 4 21 20H3z" />
+          </svg>
+        </button>
+        <button onClick={() => setTool("star")} title="star" className={toolBtn(tool === "star")} aria-label="star" aria-pressed={tool === "star"}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <path d="M12 2.5l2.9 6.2 6.6.7-4.9 4.5 1.4 6.6-6-3.4-6 3.4 1.4-6.6L2.5 9.4l6.6-.7z" />
+          </svg>
+        </button>
+        <button onClick={() => setTool("arrow")} title="arrow" className={toolBtn(tool === "arrow")} aria-label="arrow" aria-pressed={tool === "arrow"}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 20 20 4M12 4h8v8" />
+          </svg>
+        </button>
+        <button
+          onClick={() => setTool("dropper")}
+          disabled={mode !== "brush-ops"}
+          title={mode === "brush-ops" ? "pick a color from the canvas" : "eyedropper works in sketch mode"}
+          className={toolBtn(tool === "dropper")}
+          aria-label="eyedropper"
+          aria-pressed={tool === "dropper"}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={mode !== "brush-ops" ? "opacity-40" : ""}>
+            <path d="m2 22 1-4L16.5 4.5l3 3L6 21l-4 1z" />
+            <path d="m14.5 6.5 3 3L21 6l-3-3-3.5 3.5z" />
+          </svg>
+        </button>
         <button
           onClick={() => setFill((v) => !v)}
-          disabled={tool !== "rect" && tool !== "circle"}
+          disabled={tool !== "rect" && tool !== "circle" && tool !== "ellipse" && tool !== "triangle" && tool !== "star"}
           title="fill shape"
-          className={toolBtn(fill && (tool === "rect" || tool === "circle"))}
+          className={toolBtn(fill)}
           aria-label="fill shape"
           aria-pressed={fill}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill={fill ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className={tool !== "rect" && tool !== "circle" ? "opacity-40" : ""}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill={fill ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" className={tool !== "rect" && tool !== "circle" && tool !== "ellipse" && tool !== "triangle" && tool !== "star" ? "opacity-40" : ""}>
             <path d="m5 11 7-7a2.4 2.4 0 0 1 3.4 0l4.6 4.6a2.4 2.4 0 0 1 0 3.4l-7 7a2 2 0 0 1-1.4.6H7a2 2 0 0 1-2-2v-4.2a2 2 0 0 1 .6-1.4z" />
             <path d="m5 11 7 7" />
           </svg>

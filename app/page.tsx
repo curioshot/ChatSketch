@@ -8,11 +8,14 @@ import Logo from "./components/Logo";
 import {
   Drawing,
   Mode,
+  arrowHead,
   brushPasses,
   createDrawing,
   loadAll,
   orderedVisibleOps,
   removeDrawing,
+  starPoints,
+  triPoints,
 } from "@/lib/drawings";
 import { downloadJpg, downloadPdf, downloadSvg } from "@/lib/export";
 import { fitBg } from "@/lib/image";
@@ -48,6 +51,24 @@ function Preview({ d }: { d: Drawing }) {
             return <circle key={k} cx={o.center[0]} cy={o.center[1]} r={o.r} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} />;
           if (o.op === "rect")
             return <rect key={k} x={o.center[0] - o.w / 2} y={o.center[1] - o.h / 2} width={o.w} height={o.h} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} />;
+          if (o.op === "ellipse")
+            return <ellipse key={k} cx={o.center[0]} cy={o.center[1]} rx={Math.max(1, o.rx)} ry={Math.max(1, o.ry)} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} {...op} />;
+          if (o.op === "triangle" || o.op === "star") {
+            const pts = (o.op === "triangle"
+              ? triPoints(o.center[0], o.center[1], o.w, o.h)
+              : starPoints(o.center[0], o.center[1], o.r)
+            ).map((p) => p.join(",")).join(" ");
+            return <polygon key={k} points={pts} fill={o.fill ? col : "none"} stroke={col} strokeWidth={w} strokeLinejoin="round" {...op} />;
+          }
+          if (o.op === "arrow") {
+            const [h1, h2] = arrowHead(o.from, o.to, o.strokeWidth);
+            return (
+              <g key={k} stroke={col} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" fill="none" {...op}>
+                <line x1={o.from[0]} y1={o.from[1]} x2={o.to[0]} y2={o.to[1]} />
+                <path d={`M${h1[0]} ${h1[1]} L${o.to[0]} ${o.to[1]} L${h2[0]} ${h2[1]}`} />
+              </g>
+            );
+          }
           return <text key={k} x={o.center[0]} y={o.center[1]} fontSize={o.size} fill={col} textAnchor="middle" dominantBaseline="central">{o.content}</text>;
         };
         if (passes.length === 1) return one(passes[0].wMul, passes[0].alpha, i);

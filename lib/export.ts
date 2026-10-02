@@ -1,5 +1,5 @@
 // turning ops into downloadable files, no extra libs needed
-import { brushPasses, orderedVisibleOps, type Drawing, type DrawOp } from "./drawings";
+import { arrowHead, brushPasses, orderedVisibleOps, starPoints, triPoints, type Drawing, type DrawOp } from "./drawings";
 import { fitBg } from "./image";
 import { sanitizeSvgInner } from "./svg";
 
@@ -55,6 +55,19 @@ export function opsToSvg(d: Drawing): string {
             return `<circle cx="${o.center[0]}" cy="${o.center[1]}" r="${o.r}" fill="${o.fill ? c : "none"}" stroke="${c}" stroke-width="${w}"${a}/>`;
           if (o.op === "rect")
             return `<rect x="${o.center[0] - o.w / 2}" y="${o.center[1] - o.h / 2}" width="${o.w}" height="${o.h}" fill="${o.fill ? c : "none"}" stroke="${c}" stroke-width="${w}"${a}/>`;
+          if (o.op === "ellipse")
+            return `<ellipse cx="${o.center[0]}" cy="${o.center[1]}" rx="${Math.max(1, o.rx)}" ry="${Math.max(1, o.ry)}" fill="${o.fill ? c : "none"}" stroke="${c}" stroke-width="${w}"${a}/>`;
+          if (o.op === "triangle" || o.op === "star") {
+            const pts = (o.op === "triangle"
+              ? triPoints(o.center[0], o.center[1], o.w, o.h)
+              : starPoints(o.center[0], o.center[1], o.r)
+            ).map((pt) => pt.join(",")).join(" ");
+            return `<polygon points="${pts}" fill="${o.fill ? c : "none"}" stroke="${c}" stroke-width="${w}" stroke-linejoin="round"${a}/>`;
+          }
+          if (o.op === "arrow") {
+            const [h1, h2] = arrowHead(o.from, o.to, o.strokeWidth);
+            return `<g stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" fill="none"${a}><line x1="${o.from[0]}" y1="${o.from[1]}" x2="${o.to[0]}" y2="${o.to[1]}"/><path d="M${h1[0]} ${h1[1]} L${o.to[0]} ${o.to[1]} L${h2[0]} ${h2[1]}"/></g>`;
+          }
           return `<text x="${o.center[0]}" y="${o.center[1]}" font-size="${o.size}" font-family="system-ui, sans-serif" fill="${c}" text-anchor="middle" dominant-baseline="central">${escXml(o.content)}</text>`;
         })
         .join("");
