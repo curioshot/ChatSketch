@@ -23,6 +23,7 @@ import {
 } from "@/lib/drawings";
 import { contextLimit, estimateTokens, formatTokens } from "@/lib/context";
 import { sanitizeSvgInner } from "@/lib/svg";
+import { opsToSvg, rasterize } from "@/lib/export";
 import { BgImage, fileToBg, fitBg } from "@/lib/image";
 import { applySettings, loadSettings, saveSettings } from "@/lib/settings";
 import ChatText from "@/app/components/ChatText";
@@ -924,10 +925,38 @@ export default function BoardPage() {
           { me: false, text: String(data.plan || "no plan came back, try again"), questions, done: false, via },
         ]);
       } else {
-        const newOps = (data.ops || []) as DrawOp[];
-        const say = typeof data.say === "string" ? data.say.trim().slice(0, 500) : "";
-        // spoken reply for greetings and questions
-        if (say) setMsgs((m) => [...m, { me: false, text: say, via }]);
+        applyBuildResult(data as DrawResult, via);
+      }
+    } catch (e) {
+      // aborted by stop button, staying quiet
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setBusy(false);
+        setBusyStage("");
+        return;
+      }
+      setMsgs((m) => [...m, { me: false, text: "something went wrong, try again" }]);
+    }
+    clearStages();
+    abortRef.current = null;
+    setBusy(false);
+    setBusyStage("");
+  }
+
+  // loose shape of /api/draw build replies
+  type DrawResult = {
+    ops?: unknown;
+    svg?: unknown;
+    say?: unknown;
+    replace?: unknown;
+    source?: unknown;
+  };
+
+  // shared applier for build and vision-refine replies
+  function applyBuildResult(data: DrawResult, via: string) {
+    const newOps = (data.ops || []) as DrawOp[];
+    const say = typeof data.say === "string" ? data.say.trim().slice(0, 500) : "";
+    // spoken reply for greetings and questions
+    if (say) setMsgs((m) => [...m, { me: false, text: say, via }]);
         // svg mode injects raw markup straight onto the screen
         const rawSvg = typeof data.svg === "string" ? data.svg : "";
         if (mode === "svg" && rawSvg.trim()) {
@@ -1004,20 +1033,6 @@ export default function BoardPage() {
             } else if (!say) setMsgs((m) => [...m, { me: false, text: "nothing came back, try rephrasing", via }]);
           }
         }
-      }
-    } catch (e) {
-      // aborted by stop button, staying quiet
-      if (e instanceof DOMException && e.name === "AbortError") {
-        setBusy(false);
-        setBusyStage("");
-        return;
-      }
-      setMsgs((m) => [...m, { me: false, text: "something went wrong, try again" }]);
-    }
-    clearStages();
-    abortRef.current = null;
-    setBusy(false);
-    setBusyStage("");
   }
 
   // sending mcq picks back as one answer, locking that question set
@@ -1025,6 +1040,96 @@ export default function BoardPage() {
     if (!summary.trim() || busy) return;
     setMsgs((m) => m.map((msg, i) => (i === msgIndex ? { ...msg, done: true } : msg)));
     setTimeout(() => sendText(summary), 0);
+  }
+
+  // screenshotting the board for the vision loop, small jpeg
+  async function captureBoard(): Promise<string | null> {
+    try {
+      if (mode === "svg") {
+        const c = await rasterize(
+          opsToSvg({ id, title, mode, ops, layers, bg: bg || undefined, chat: [], intent: "build", updatedAt: 0 }),
+          768
+        );
+        return c.toDataURL("image/jpeg", 0.8);
+      }
+      const src = canvasRef.current;
+      if (!src) return null;
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = src.toDataURL("image/png");
+      });
+      const k = Math.min(1, 768 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(img.width * k));
+      c.height = Math.max(1, Math.round(img.height * k));
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.8);
+    } catch {
+      return null;
+    }
+  }
+
+  // vision refine: model looks at the board and redraws it better
+  async function refineVision() {
+    if (busy) return;
+    setMsgs((m) => [...m, { me: true, text: "Refine this drawing" }]);
+    setBusy(true);
+    setBusyStage("capturing…");
+    const shot = await captureBoard();
+    if (!shot) {
+      setBusy(false);
+      setBusyStage("");
+      setMsgs((m) => [...m, { me: false, text: "could not capture the board, try again" }]);
+      return;
+    }
+    const lastReq = [...msgs].reverse().find((m) => m.me)?.text || "Improve this drawing";
+    setBusyStage("looking…");
+    stageTimers.current.push(window.setTimeout(() => setBusyStage("redrawing…"), 4000));
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const raw = localStorage.getItem("ai-board-settings-v1");
+      const cfg = raw ? JSON.parse(raw) : {};
+      const res = await fetch("/api/draw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: lastReq.slice(0, 500),
+          mode,
+          intent: "refine",
+          image: shot,
+          canvas: ops.slice(-40).map((o) =>
+            o.op === "svg"
+              ? { ...o, markup: o.markup.slice(0, 500) }
+              : o.op === "polyline"
+                ? { ...o, points: o.points.slice(0, 60) }
+                : o
+          ),
+          history: msgs.slice(-10).map((m) => ({ role: m.me ? "user" : "assistant", content: m.text })),
+          provider: cfg.provider || "nvidia",
+          apiKey: cfg.apiKey || "",
+          model: cfg.model || "",
+          baseUrl: cfg.baseUrl || "",
+        }),
+        signal: ctrl.signal,
+      });
+      const data = await res.json();
+      const via = `${data.source || cfg.provider || "mock"} / vision`;
+      applyBuildResult(data, via);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        setMsgs((m) => [...m, { me: false, text: "something went wrong, try again" }]);
+      }
+    }
+    clearStages();
+    abortRef.current = null;
+    setBusy(false);
+    setBusyStage("");
   }
 
   // short model name for the picker button, state only so ssr matches
@@ -1338,6 +1443,19 @@ export default function BoardPage() {
               </svg>
             </button>
           </div>
+          {/* vision refine: screenshot back to the model */}
+          <button
+            onClick={refineVision}
+            disabled={busy}
+            title="let the model look at the board and redraw it better"
+            className="mx-2 mt-2 flex items-center justify-center gap-1.5 rounded-xl border border-gray-200 py-1.5 text-xs font-medium transition-colors hover:bg-black hover:text-white disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-white dark:hover:text-black"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
+              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" />
+            </svg>
+            Refine with vision
+          </button>
           {/* plan describes, build draws */}
           <div className="grid grid-cols-2 gap-1 border-b border-gray-100 p-2 dark:border-neutral-700">
             {(["plan", "build"] as const).map((t) => (

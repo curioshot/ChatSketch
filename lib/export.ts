@@ -77,7 +77,7 @@ export function opsToSvg(d: Drawing): string {
 }
 
 // rasterizing through the svg file so injected artwork exports too
-function rasterize(svg: string, px: number): Promise<HTMLCanvasElement> {
+export function rasterize(svg: string, px: number): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
     const img = new Image();
