@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@liveblocks/client": "^3.24.3",
+    "@liveblocks/node": "^3.24.3",
+    "@liveblocks/react": "^3.24.3",
     "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"

@@ -295,6 +295,19 @@ export default function SettingsModal({
                 </button>
               ))}
             </div>
+
+            {/* voice section */}
+            <p className="mt-5 text-xs font-medium text-gray-500 dark:text-gray-400">VOICE</p>
+            <button
+              onClick={() => setS({ ...s, voiceOut: !s.voiceOut })}
+              aria-pressed={s.voiceOut}
+              className="mt-2 flex w-full items-center justify-between rounded-xl border border-gray-200 px-3 py-2 text-sm transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            >
+              <span>Read replies aloud</span>
+              <span className={`relative h-5 w-9 rounded-full transition-colors ${s.voiceOut ? "bg-black dark:bg-white" : "bg-gray-200 dark:bg-neutral-700"}`}>
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all dark:bg-neutral-900 ${s.voiceOut ? "left-[18px]" : "left-0.5"}`} />
+              </span>
+            </button>
           </>
         )}
 

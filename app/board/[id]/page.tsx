@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { LiveblocksProvider, RoomProvider } from "@liveblocks/react";
+import LiveSync, { type Peer } from "@/app/components/LiveSync";
+import ShareModal from "@/app/components/ShareModal";
 import {
   BOARD_SIZE as SIZE,
   ChatMsg,
@@ -147,6 +150,36 @@ const toolBtn = (active: boolean) =>
   `rounded-lg p-2 transition-colors ${active ? "bg-black text-white dark:bg-white dark:text-black" : "hover:bg-gray-100 dark:hover:bg-neutral-800"}`;
 
 export default function BoardPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-gray-500">loading...</div>}>
+      <BoardShell />
+    </Suspense>
+  );
+}
+
+// room shell: same board, optionally inside a liveblocks room
+function BoardShell() {
+  const params = useParams();
+  const sp = useSearchParams();
+  const id = String(params.id || "");
+  const [live, setLive] = useState(sp.get("live") === "1");
+  const canLive = process.env.NEXT_PUBLIC_LIVE_ENABLED === "true";
+  const roomId = (`chatsketch-${id}`.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 80) || "chatsketch-lobby");
+  if (!live || !canLive) return <BoardInner live={false} setLive={setLive} canLive={canLive} />;
+  return (
+    <LiveblocksProvider authEndpoint="/api/liveblocks-auth">
+      <RoomProvider
+        id={roomId}
+        initialPresence={{ cursor: null, name: "", color: "" }}
+        initialStorage={{ doc: "" }}
+      >
+        <BoardInner live={live} setLive={setLive} canLive={canLive} />
+      </RoomProvider>
+    </LiveblocksProvider>
+  );
+}
+
+function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: boolean) => void; canLive: boolean }) {
   const params = useParams();
   const id = String(params.id || "");
   // all strokes live here
@@ -161,6 +194,9 @@ export default function BoardPage() {
   }, [activeLayerId]);
   // layers panel open or not
   const [layersOpen, setLayersOpen] = useState(false);
+  // live room peers and share dialog
+  const [peers, setPeers] = useState<Peer[]>([]);
+  const [shareOpen, setShareOpen] = useState(false);
   // photo underneath to trace over
   const [bg, setBg] = useState<BgImage | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -215,6 +251,8 @@ export default function BoardPage() {
   // provider model for the context meter, refreshed on focus
   const [meterModel, setMeterModel] = useState("");
   const [meterProvider, setMeterProvider] = useState("nvidia");
+  // reading replies aloud, from settings
+  const [voiceOut, setVoiceOut] = useState(false);
   // inline model picker near the chat box
   const [modelOpen, setModelOpen] = useState(false);
   const [modelList, setModelList] = useState<string[]>([]);
@@ -415,10 +453,12 @@ export default function BoardPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMeterModel(st.model);
     setMeterProvider(st.provider);
+    setVoiceOut(st.voiceOut);
     const refreshMeter = () => {
       const cur = loadSettings();
       setMeterModel(cur.model);
       setMeterProvider(cur.provider);
+      setVoiceOut(cur.voiceOut);
     };
     window.addEventListener("focus", refreshMeter);
     const d = getDrawing(id);
@@ -549,6 +589,30 @@ export default function BoardPage() {
     setRedoStack([]);
     // fresh strokes void the edit safety net below
     setEditBackup(null);
+  }
+
+  // merging a remote canvas: appends win, shrinks are followed
+  function applyRemoteDoc(rOps: DrawOp[], rLayers: Layer[]) {
+    setOps((prev) => {
+      if (rOps.length < prev.length) return rOps;
+      const have = new Set(prev.map((o) => o.key));
+      const add = rOps.filter((o) => o.key && !have.has(o.key));
+      return add.length ? [...prev, ...add] : prev;
+    });
+    setLayers((prev) => {
+      const out = [...prev];
+      for (const rl of rLayers) {
+        const i = out.findIndex((l) => l.id === rl.id);
+        if (i === -1) {
+          out.push(rl);
+        } else {
+          const keys = [...out[i].keys];
+          for (const k of rl.keys) if (!keys.includes(k)) keys.push(k);
+          out[i] = { ...out[i], keys, visible: rl.visible };
+        }
+      }
+      return out;
+    });
   }
 
   // undoing the last ai edit
@@ -806,12 +870,54 @@ export default function BoardPage() {
     stageTimers.current = [];
   }
 
+  // reading the latest assistant reply aloud when enabled
+  useEffect(() => {
+    if (!voiceOut) return;
+    const last = msgs[msgs.length - 1];
+    if (!last || last.me || !last.text) return;
+    if (/^(added \d+|nothing came back|no plan came back|stopped|updated)/.test(last.text)) return;
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth) return;
+      const clean = last.text
+        .replace(/```[\s\S]*?```/g, " ")
+        .replace(/[*_`#>\-]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 500);
+      if (!clean) return;
+      synth.cancel();
+      synth.speak(new SpeechSynthesisUtterance(clean));
+    } catch {
+      // no speech engine, staying quiet
+    }
+  }, [msgs, voiceOut]);
+
+  // toggling read-aloud, persisted in settings
+  function toggleVoiceOut() {
+    const st = loadSettings();
+    st.voiceOut = !st.voiceOut;
+    saveSettings(st);
+    setVoiceOut(st.voiceOut);
+    if (!st.voiceOut) {
+      try {
+        speechSynthesis.cancel();
+      } catch {
+        // ignoring
+      }
+    }
+  }
   // stopping generation: aborting the call and dropping queued strokes
   function stop() {
     abortRef.current?.abort();
     abortRef.current = null;
     clearTimers();
     setAiCursor(null);
+    try {
+      speechSynthesis.cancel();
+    } catch {
+      // no speech engine, ignoring
+    }
     setBusy(false);
     setBusyStage("");
     setMsgs((m) => [...m, { me: false, text: "stopped — ask again or retry" }]);
@@ -1236,7 +1342,7 @@ export default function BoardPage() {
   }
 
   if (!ready) return <div className="p-6 text-sm text-gray-500 dark:text-gray-400">loading...</div>;
-  if (ready && ops.length === 0 && !getDrawing(id)) {
+  if (ready && ops.length === 0 && !getDrawing(id) && !live) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3">
         <p className="text-sm text-gray-600 dark:text-gray-300">drawing not found</p>
@@ -1409,7 +1515,72 @@ export default function BoardPage() {
         <span className="rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-600 dark:border-neutral-700 dark:text-gray-300">
           {mode === "svg" ? "svg" : "sketch"}
         </span>
+        <button
+          onClick={() => setShareOpen(true)}
+          title="share this drawing live"
+          aria-label="share this drawing live"
+          className="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <path d="m8.6 10.6 6.8-4.2M8.6 13.4l6.8 4.2" />
+          </svg>
+        </button>
+        {live && (
+          <span className="flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-300">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+            LIVE
+          </span>
+        )}
       </div>
+
+      {/* share dialog */}
+      {shareOpen && (
+        <ShareModal
+          open
+          live={live}
+          canLive={canLive}
+          link={typeof window !== "undefined" ? `${window.location.origin}/board/${id}?live=1` : ""}
+          onStart={() => {
+            setLive(true);
+            setShareOpen(false);
+          }}
+          onStop={() => {
+            setLive(false);
+            setShareOpen(false);
+          }}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+
+      {/* live sync: storage snapshots plus presence, only while sharing */}
+      {live && (
+        <LiveSync ops={ops} layers={layers} applyDoc={applyRemoteDoc} boxRef={boxRef} view={view} onPeers={setPeers} />
+      )}
+
+      {/* remote cursors */}
+      {peers.map((p) => (
+        <div
+          key={p.id}
+          className="pointer-events-none absolute z-30"
+          style={{
+            left: `${((p.x - (view.cx - vbW / 2)) / vbW) * 100}%`,
+            top: `${((p.y - (view.cy - vbW / 2)) / vbW) * 100}%`,
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill={p.color} stroke="white" strokeWidth="1.5">
+            <path d="M5 3l14 7-6.5 1.5L9 18 5 3z" />
+          </svg>
+          <span
+            className="ml-4 -mt-1 block w-fit whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] text-white shadow-lg"
+            style={{ backgroundColor: p.color }}
+          >
+            {p.name}
+          </span>
+        </div>
+      ))}
 
       {/* left chat toggle */}
       <button
@@ -1437,11 +1608,32 @@ export default function BoardPage() {
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">{busy ? busyStage || "working…" : "online"}</p>
               </div>
             </div>
-            <button onClick={() => setChatOpen(false)} className="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800" aria-label="close chat">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-            </button>
+            <div className="flex gap-1">
+              <button
+                onClick={toggleVoiceOut}
+                title={voiceOut ? "mute replies" : "read replies aloud"}
+                aria-label={voiceOut ? "mute replies" : "read replies aloud"}
+                aria-pressed={voiceOut}
+                className={`rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800 ${voiceOut ? "text-black dark:text-white" : "text-gray-400"}`}
+              >
+                {voiceOut ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 5 6 9H2v6h4l5 4V5z" />
+                    <path d="m23 9-6 6M17 9l6 6" />
+                  </svg>
+                )}
+              </button>
+              <button onClick={() => setChatOpen(false)} className="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800" aria-label="close chat">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
           {/* vision refine: screenshot back to the model */}
           <button

@@ -10,6 +10,7 @@ export type Settings = {
   apiKey: string;
   model: string;
   baseUrl: string;
+  voiceOut: boolean;
 };
 
 const KEY = "ai-board-settings-v1";
@@ -59,6 +60,7 @@ export function defaultSettings(): Settings {
     apiKey: "",
     model: presetModel("nvidia"),
     baseUrl: presetBaseUrl("nvidia"),
+    voiceOut: false,
   };
 }
 
