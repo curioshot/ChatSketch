@@ -17,7 +17,7 @@ import {
   starPoints,
   triPoints,
 } from "@/lib/drawings";
-import { downloadJpg, downloadPdf, downloadSvg } from "@/lib/export";
+import { downloadJpg, downloadPdf, downloadPng, downloadSvg } from "@/lib/export";
 import { fitBg } from "@/lib/image";
 import { sanitizeSvgInner } from "@/lib/svg";
 import { applySettings, loadSettings } from "@/lib/settings";
@@ -155,10 +155,11 @@ export default function Dashboard() {
   }
 
   // exporting a card, then closing the menu
-  async function doExport(d: Drawing, fmt: "pdf" | "jpg" | "svg") {
+  async function doExport(d: Drawing, fmt: "pdf" | "jpg" | "png" | "svg") {
     try {
       if (fmt === "pdf") await downloadPdf(d);
       else if (fmt === "jpg") await downloadJpg(d);
+      else if (fmt === "png") await downloadPng(d);
       else downloadSvg(d);
     } catch {
       // rasterize can fail on odd markup, menu still closes
@@ -352,7 +353,7 @@ export default function Dashboard() {
                         </button>
                         {exportOpen && (
                           <div className="flex gap-1.5 px-3 pb-2 pt-0.5">
-                            {(["pdf", "jpg", "svg"] as const).map((f) => (
+                            {(d.mode === "svg" ? (["svg"] as const) : (["pdf", "jpg", "png", "svg"] as const)).map((f) => (
                               <button
                                 key={f}
                                 onClick={() => doExport(d, f)}

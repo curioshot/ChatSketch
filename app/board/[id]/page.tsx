@@ -26,7 +26,7 @@ import {
 } from "@/lib/drawings";
 import { contextLimit, estimateTokens, formatTokens } from "@/lib/context";
 import { sanitizeSvgInner } from "@/lib/svg";
-import { opsToSvg, rasterize } from "@/lib/export";
+import { downloadJpg, downloadPdf, downloadPng, downloadSvg, opsToSvg, rasterize } from "@/lib/export";
 import { BgImage, fileToBg, fitBg } from "@/lib/image";
 import { applySettings, loadSettings, saveSettings } from "@/lib/settings";
 import ChatText from "@/app/components/ChatText";
@@ -197,6 +197,22 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // live room peers and share dialog
   const [peers, setPeers] = useState<Peer[]>([]);
   const [shareOpen, setShareOpen] = useState(false);
+  // export menu open or not
+  const [exportOpen, setExportOpen] = useState(false);
+
+  // exporting the current board, svg mode offers svg only
+  async function exportBoard(fmt: "pdf" | "jpg" | "png" | "svg") {
+    const drawing = { id, title: title || "Untitled", mode, ops, layers, bg: bg || undefined, chat: [], intent: "build" as const, updatedAt: 0 };
+    try {
+      if (fmt === "pdf") await downloadPdf(drawing);
+      else if (fmt === "jpg") await downloadJpg(drawing);
+      else if (fmt === "png") await downloadPng(drawing);
+      else downloadSvg(drawing);
+    } catch {
+      // rasterize can fail on odd markup, menu still closes
+    }
+    setExportOpen(false);
+  }
   // photo underneath to trace over
   const [bg, setBg] = useState<BgImage | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -479,6 +495,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // saving quietly on every change, chat session included
   useEffect(() => {
     if (!ready) return;
+    // eslint-disable-next-line react-hooks/purity -- timestamp for ordering saves
     saveDrawing({ id, title, mode, ops, layers, bg: bg || undefined, chat: msgs, intent, updatedAt: Date.now() });
   }, [ops, layers, bg, mode, title, msgs, intent, id, ready]);
 
@@ -1509,8 +1526,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          aria-label="drawing title"
-          className="w-40 rounded bg-transparent px-1 text-sm font-medium outline-none transition-colors focus:bg-gray-50 dark:focus:bg-neutral-800"
+          aria-label="drawing title, click to rename"
+          title="click to rename"
+          placeholder="Untitled"
+          className="w-36 rounded bg-transparent px-1 text-sm font-medium outline-none transition-colors hover:bg-gray-50 focus:bg-gray-50 dark:hover:bg-neutral-800 dark:focus:bg-neutral-800 sm:w-40"
         />
         <span className="rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-600 dark:border-neutral-700 dark:text-gray-300">
           {mode === "svg" ? "svg" : "sketch"}
@@ -1528,6 +1547,36 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             <path d="m8.6 10.6 6.8-4.2M8.6 13.4l6.8 4.2" />
           </svg>
         </button>
+        {/* export menu, svg mode offers svg only */}
+        <div className="relative">
+          <button
+            onClick={() => setExportOpen((v) => !v)}
+            title="export drawing"
+            aria-label="export drawing"
+            aria-expanded={exportOpen}
+            className="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+            </svg>
+          </button>
+          {exportOpen && (
+            <>
+              <button aria-label="close export menu" className="fixed inset-0 z-30 cursor-default" onClick={() => setExportOpen(false)} />
+              <div className="absolute left-1/2 top-full z-40 mt-2 w-32 -translate-x-1/2 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+                {(mode === "svg" ? (["svg"] as const) : (["pdf", "jpg", "png", "svg"] as const)).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => exportBoard(f)}
+                    className="block w-full px-3 py-1.5 text-left text-xs font-medium uppercase transition-colors hover:bg-gray-50 dark:hover:bg-neutral-800"
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         {live && (
           <span className="flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-950 dark:text-green-300">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />

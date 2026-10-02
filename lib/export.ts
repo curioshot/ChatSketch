@@ -122,6 +122,12 @@ export async function downloadJpg(d: Drawing) {
   if (blob) trigger(URL.createObjectURL(blob), fileName(d.title, "jpg"));
 }
 
+export async function downloadPng(d: Drawing) {
+  const c = await rasterize(opsToSvg(d), 2000);
+  const blob = await new Promise<Blob | null>((resolve) => c.toBlob(resolve, "image/png"));
+  if (blob) trigger(URL.createObjectURL(blob), fileName(d.title, "png"));
+}
+
 // tiny one-image pdf writer, so we need no pdf library
 export async function downloadPdf(d: Drawing) {
   const c = await rasterize(opsToSvg(d), 1500);
