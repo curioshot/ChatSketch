@@ -94,10 +94,13 @@ export default function LiveSync({
     const move = (e: PointerEvent) => {
       const r = el.getBoundingClientRect();
       const w = 1000 / view.s;
+      const s = Math.min(r.width, r.height) / w;
+      const ox = (r.width - s * w) / 2;
+      const oy = (r.height - s * w) / 2;
       updatePresence({
         cursor: {
-          x: Math.round(((e.clientX - r.left) / r.width) * w + (view.cx - w / 2)),
-          y: Math.round(((e.clientY - r.top) / r.height) * w + (view.cy - w / 2)),
+          x: Math.round((e.clientX - r.left - ox) / s + (view.cx - w / 2)),
+          y: Math.round((e.clientY - r.top - oy) / s + (view.cy - w / 2)),
         },
         name: me.name,
         color: me.color,

@@ -267,6 +267,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // provider model for the context meter, refreshed on focus
   const [meterModel, setMeterModel] = useState("");
   const [meterProvider, setMeterProvider] = useState("nvidia");
+  // demo mode when no api key is saved anywhere
+  const [hasKey, setHasKey] = useState(true);
   // reading replies aloud, from settings
   const [voiceOut, setVoiceOut] = useState(false);
   // inline model picker near the chat box
@@ -288,12 +290,33 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     };
   }
 
+  // measured board box in css px, for overlay positioning
+  const [cssSize, setCssSize] = useState({ w: 1, h: 1 });
+
+  // uniform meet-fit mapping shared by paint, pointer and overlays
+  function viewGeom(cw: number, ch: number) {
+    const w = SIZE / view.s;
+    const s = Math.min(cw, ch) / w;
+    const ox = (cw - s * w) / 2;
+    const oy = (ch - s * w) / 2;
+    return { w, s, ox, oy };
+  }
+
   // screen px to board coords through the current view
   function toBoardPx(px: number, py: number, r: DOMRect): [number, number] {
-    const w = SIZE / view.s;
-    const bx = ((px - r.left) / r.width) * w + (view.cx - w / 2);
-    const by = ((py - r.top) / r.height) * w + (view.cy - w / 2);
+    const g = viewGeom(r.width, r.height);
+    const bx = ((px - r.left - g.ox) / g.s) + (view.cx - g.w / 2);
+    const by = ((py - r.top - g.oy) / g.s) + (view.cy - g.w / 2);
     return [Math.round(bx), Math.round(by)];
+  }
+
+  // board coords to css percent for floating cursors and inputs
+  function boardPct(x: number, y: number): { left: string; top: string } {
+    const g = viewGeom(cssSize.w, cssSize.h);
+    return {
+      left: `${(((x - (view.cx - g.w / 2)) * g.s + g.ox) / cssSize.w) * 100}%`,
+      top: `${(((y - (view.cy - g.w / 2)) * g.s + g.oy) / cssSize.h) * 100}%`,
+    };
   }
 
   // converting pointer to 0-1000 board, using coalesced points for smooth curves
@@ -393,15 +416,13 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const ctx = c.getContext("2d")!;
     const cssW = c.clientWidth || 1;
     const cssH = c.clientHeight || 1;
-    const w = SIZE / view.s;
+    const g = viewGeom(cssW, cssH);
     const dprX = c.width / cssW;
     const dprY = c.height / cssH;
-    const sfx = cssW / w;
-    const sfy = cssH / w;
-    // mapping board units straight to screen through zoom and pan
+    // mapping board units straight to screen through zoom, pan and centering
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
-    ctx.setTransform(dprX * sfx, 0, 0, dprY * sfy, dprX * -(view.cx - w / 2) * sfx, dprY * -(view.cy - w / 2) * sfy);
+    ctx.setTransform(dprX * g.s, 0, 0, dprY * g.s, dprX * (-(view.cx - g.w / 2) * g.s + g.ox), dprY * (-(view.cy - g.w / 2) * g.s + g.oy));
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     // photo first so strokes trace over it
@@ -470,11 +491,29 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     setMeterModel(st.model);
     setMeterProvider(st.provider);
     setVoiceOut(st.voiceOut);
+    setHasKey(Boolean(st.apiKey.trim()));
+    fetch("/api/draw")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.hasServerKey) setHasKey(true);
+      })
+      .catch(() => {
+        // status check failed, settings key still counts
+      });
     const refreshMeter = () => {
       const cur = loadSettings();
       setMeterModel(cur.model);
       setMeterProvider(cur.provider);
       setVoiceOut(cur.voiceOut);
+      setHasKey(Boolean(cur.apiKey.trim()));
+      fetch("/api/draw")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.hasServerKey) setHasKey(true);
+        })
+        .catch(() => {
+          // ignoring
+        });
     };
     window.addEventListener("focus", refreshMeter);
     const d = getDrawing(id);
@@ -512,6 +551,11 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       c.height = Math.max(1, Math.round(r.height * dpr));
       // resizing clears the canvas, bumping a repaint
       setSizeTick((t) => t + 1);
+      setCssSize((prev) =>
+        Math.abs(prev.w - r.width) < 1 && Math.abs(prev.h - r.height) < 1
+          ? prev
+          : { w: r.width, h: r.height }
+      );
     };
     fix();
     window.addEventListener("resize", fix);
@@ -551,17 +595,21 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const py = e.clientY - r.top;
       setView((v) => {
         const w = SIZE / v.s;
-        const sfx = r.width / w;
-        const sfy = r.height / w;
+        const s = Math.min(r.width, r.height) / w;
+        const ox = (r.width - s * w) / 2;
+        const oy = (r.height - s * w) / 2;
         // board point under the cursor stays put
-        const bx = px / sfx + (v.cx - w / 2);
-        const by = py / sfy + (v.cy - w / 2);
+        const bx = (px - ox) / s + (v.cx - w / 2);
+        const by = (py - oy) / s + (v.cy - w / 2);
         const ns = Math.min(8, Math.max(0.5, v.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
         const nw = SIZE / ns;
+        const nss = Math.min(r.width, r.height) / nw;
+        const nox = (r.width - nss * nw) / 2;
+        const noy = (r.height - nss * nw) / 2;
         return clampView({
           s: ns,
-          cx: bx - (px / (r.width / nw) - nw / 2),
-          cy: by - (py / (r.height / nw) - nw / 2),
+          cx: bx - (px - nox) / nss + nw / 2,
+          cy: by - (py - noy) / nss + nw / 2,
         });
       });
     };
@@ -740,7 +788,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const r = box.getBoundingClientRect();
       setView((v) => {
         const w = SIZE / v.s;
-        return clampView({ s: v.s, cx: v.cx - (dx / r.width) * w, cy: v.cy - (dy / r.height) * w });
+        const s = Math.min(r.width, r.height) / w;
+        return clampView({ s: v.s, cx: v.cx - dx / s, cy: v.cy - dy / s });
       });
       return;
     }
@@ -1125,6 +1174,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   function applyBuildResult(data: DrawResult, via: string) {
     const newOps = (data.ops || []) as DrawOp[];
     const say = typeof data.say === "string" ? data.say.trim().slice(0, 500) : "";
+    // honest label when the mock answered instead of a real model
+    const demo = data.source === "mock" ? " (demo mode — add an API key for real drawings)" : "";
     // spoken reply for greetings and questions
     if (say) setMsgs((m) => [...m, { me: false, text: say, via }]);
         // svg mode injects raw markup straight onto the screen
@@ -1153,13 +1204,13 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
               // flashing the cursor where the new artwork lands
               setAiCursor({ x: 500, y: 500 });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
-              setMsgs((m) => [...m, { me: false, text: "updated the artwork", via }]);
+              setMsgs((m) => [...m, { me: false, text: `updated the artwork${demo}`, via }]);
             } else {
               pushOp({ op: "svg", tool: "brush", markup: clean });
               setFrameLabel("Doodle drew");
               setAiCursor({ x: 500, y: 500 });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
-              setMsgs((m) => [...m, { me: false, text: "added 1 artwork", via }]);
+              setMsgs((m) => [...m, { me: false, text: `added 1 artwork${demo}`, via }]);
             }
           } else if (!newOps.length && !say) {
             setMsgs((m) => [...m, { me: false, text: "nothing came back, try rephrasing", via }]);
@@ -1188,7 +1239,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             const [ex, ey] = opAnchor(keyed[0]);
             setAiCursor({ x: ex, y: ey });
             opTimers.current.push(window.setTimeout(() => setAiCursor(null), 900));
-            setMsgs((m) => [...m, { me: false, text: `updated with ${newOps.length} strokes`, via }]);
+            setMsgs((m) => [...m, { me: false, text: `updated with ${newOps.length} strokes${demo}`, via }]);
           } else {
             // cursor rides along while strokes land one by one
             newOps.forEach((o, i) => {
@@ -1203,7 +1254,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             if (newOps.length) {
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), newOps.length * 250 + 600));
               setFrameLabel("Doodle drew");
-              setMsgs((m) => [...m, { me: false, text: `added ${newOps.length} strokes`, via }]);
+              setMsgs((m) => [...m, { me: false, text: `added ${newOps.length} strokes${demo}`, via }]);
             } else if (!say) setMsgs((m) => [...m, { me: false, text: "nothing came back, try rephrasing", via }]);
           }
         }
@@ -1456,7 +1507,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         {mode === "brush-ops" ? (
           <canvas ref={canvasRef} className="pointer-events-none h-full w-full" />
         ) : (
-          <svg viewBox={viewBox} className="pointer-events-none h-full w-full bg-white">
+          <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className="pointer-events-none h-full w-full bg-white">
             {bg && bgFit && <image href={bg.src} x={bgFit.x} y={bgFit.y} width={bgFit.w} height={bgFit.h} preserveAspectRatio="xMidYMid meet" />}
             {shownOps.map((o, i) => opNode(o, i))}
             {draftOp && opNode(draftOp, "draft", true)}
@@ -1480,7 +1531,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             onPointerDown={(e) => e.stopPropagation()}
             placeholder="type text, Enter to place..."
             aria-label="text to place"
-            style={{ left: `${((textAt[0] - (view.cx - vbW / 2)) / vbW) * 100}%`, top: `${((textAt[1] - (view.cy - vbW / 2)) / vbW) * 100}%` }}
+            style={boardPct(textAt[0], textAt[1])}
             className="absolute z-10 w-48 -translate-x-1/2 rounded-lg border border-black bg-white/95 px-2 py-1 text-sm text-black outline-none dark:border-white dark:bg-neutral-900 dark:text-white"
           />
         )}
@@ -1489,10 +1540,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         {aiCursor && (
           <div
             className="pointer-events-none absolute z-30"
-            style={{
-              left: `${((aiCursor.x - (view.cx - vbW / 2)) / vbW) * 100}%`,
-              top: `${((aiCursor.y - (view.cy - vbW / 2)) / vbW) * 100}%`,
-            }}
+            style={boardPct(aiCursor.x, aiCursor.y)}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="black" stroke="white" strokeWidth="1.5" className="dark:fill-white dark:stroke-black">
               <path d="M5 3l14 7-6.5 1.5L9 18 5 3z" />
@@ -1665,10 +1713,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         <div
           key={p.id}
           className="pointer-events-none absolute z-30"
-          style={{
-            left: `${((p.x - (view.cx - vbW / 2)) / vbW) * 100}%`,
-            top: `${((p.y - (view.cy - vbW / 2)) / vbW) * 100}%`,
-          }}
+          style={boardPct(p.x, p.y)}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill={p.color} stroke="white" strokeWidth="1.5">
             <path d="M5 3l14 7-6.5 1.5L9 18 5 3z" />
@@ -1704,7 +1749,14 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
                 <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white dark:border-neutral-900 ${busy ? "bg-amber-500" : "bg-green-500"}`} />
               </span>
               <div>
-                <p className="text-sm font-medium leading-tight">Doodle</p>
+                <p className="flex items-center gap-1.5 text-sm font-medium leading-tight">
+                  Doodle
+                  {!hasKey && !busy && (
+                    <span className="rounded-full bg-amber-100 px-1.5 py-px text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                      demo
+                    </span>
+                  )}
+                </p>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400">{busy ? busyStage || "working…" : "online"}</p>
               </div>
             </div>
@@ -1789,6 +1841,11 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             {msgs.length === 0 && (
               <div>
                 <p className="text-gray-500 dark:text-gray-400">tell me something to draw, I will put it on the board</p>
+                {!hasKey && (
+                  <p className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                    demo mode: add an API key in Settings for real AI drawings
+                  </p>
+                )}
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {["Draw a house", "Draw a logo", "Who are you?"].map((chip) => (
                     <button

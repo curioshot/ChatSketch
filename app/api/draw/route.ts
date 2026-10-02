@@ -121,8 +121,8 @@ function mockOps(prompt: string) {
     ];
   }
   return [
-    { op: "line", tool: "brush", color, strokeWidth: 5, from: [100, 100], to: [105, 100] },
-    { op: "bezier", tool: "brush", color, strokeWidth: 4, from: [100, 100], cp1: [150, 50], cp2: [200, 150], to: [250, 100] },
+    { op: "line", tool: "brush", color, strokeWidth: 8, from: [420, 500], to: [580, 500] },
+    { op: "bezier", tool: "brush", color, strokeWidth: 6, from: [420, 500], cp1: [480, 420], cp2: [540, 580], to: [600, 500] },
   ];
 }
 
@@ -234,6 +234,11 @@ function extractJson(text: string): { ops?: unknown; plan?: unknown; questions?:
   } catch {
     return {};
   }
+}
+
+// telling the board whether a server key exists, so demo mode is honest
+export async function GET() {
+  return NextResponse.json({ hasServerKey: Boolean(ENV_KEY) });
 }
 
 export async function POST(req: Request) {
