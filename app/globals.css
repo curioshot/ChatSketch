@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* logo stroke draws itself in */
+@keyframes chatsketch-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.chatsketch-draw {
+  animation: chatsketch-draw 1.1s ease forwards;
+}
+
+/* splash name rises in */
+@keyframes chatsketch-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chatsketch-rise {
+  opacity: 0;
+  animation: chatsketch-rise 0.6s ease forwards;
+}
