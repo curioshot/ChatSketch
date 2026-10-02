@@ -539,6 +539,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   }, [ops, layers, bg, mode, title, msgs, intent, id, ready]);
 
   // fitting canvas to screen with sharp retina backing
+  // reruns when the canvas actually mounts (after loading) or the mode flips
   const [sizeTick, setSizeTick] = useState(0);
   useEffect(() => {
     const fix = () => {
@@ -546,6 +547,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const box = boxRef.current;
       if (!c || !box) return;
       const r = box.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 3);
       c.width = Math.max(1, Math.round(r.width * dpr));
       c.height = Math.max(1, Math.round(r.height * dpr));
@@ -560,7 +562,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     fix();
     window.addEventListener("resize", fix);
     return () => window.removeEventListener("resize", fix);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, mode]);
 
   // repainting when ops, layers, draft, view, mode or canvas size change
   useEffect(() => {
