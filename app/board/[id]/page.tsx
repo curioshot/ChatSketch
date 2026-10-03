@@ -21,6 +21,7 @@ import {
   getDrawing,
   orderedVisibleOps,
   saveDrawing,
+  sizeLabel,
   starPoints,
   triPoints,
 } from "@/lib/drawings";
@@ -158,6 +159,28 @@ export default function BoardPage() {
 }
 
 // room shell: same board, optionally inside a liveblocks room
+// rulers treat 96 board units as one inch, like css pixels
+type RulerUnit = "px" | "mm" | "cm" | "in";
+const UNIT_KEY = "ai-board-ruler-unit-v1";
+function toUnit(px: number, u: RulerUnit): number {
+  if (u === "mm") return (px * 25.4) / 96;
+  if (u === "cm") return (px * 2.54) / 96;
+  if (u === "in") return px / 96;
+  return px;
+}
+// short label for a board value in the picked unit
+function fmtUnit(px: number, u: RulerUnit): string {
+  const v = toUnit(px, u);
+  if (u === "px") return String(Math.round(v));
+  if (u === "in") return String(Math.round(v * 100) / 100);
+  return String(Math.round(v * 10) / 10);
+}
+// nice labeled step so ticks land about 80 css px apart
+function niceStep(boardPer80px: number): number {
+  const pow = Math.pow(10, Math.floor(Math.log10(boardPer80px)));
+  for (const m of [1, 2, 5, 10]) if (m * pow >= boardPer80px) return m * pow;
+  return 10 * pow;
+}
 function BoardShell() {
   const params = useParams();
   const sp = useSearchParams();
@@ -230,6 +253,29 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   const [brushOpen, setBrushOpen] = useState(false);
   // zoom + pan view, center in board coords
   const [view, setView] = useState({ s: 1, cx: 500, cy: 500 });
+  // ruler unit, remembered per browser
+  const [rulerUnit, setRulerUnit] = useState<RulerUnit>("px");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(UNIT_KEY);
+      if (saved === "mm" || saved === "cm" || saved === "in" || saved === "px") {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setRulerUnit(saved);
+      }
+    } catch {
+      // storage blocked, px stays
+    }
+  }, []);
+  function pickUnit(u: RulerUnit) {
+    setRulerUnit(u);
+    try {
+      localStorage.setItem(UNIT_KEY, u);
+    } catch {
+      // storage blocked, unit still applies for this visit
+    }
+  }
+  // live cursor in board coords, for the readout
+  const [cursor, setCursor] = useState<[number, number] | null>(null);
   // active pan drag in screen px, space bar held or not
   const panStart = useRef<{ x: number; y: number } | null>(null);
   const spaceDown = useRef(false);
@@ -310,7 +356,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const g = viewGeom(r.width, r.height);
     const bx = ((px - r.left - g.ox) / g.s) + (view.cx - g.vw / 2);
     const by = ((py - r.top - g.oy) / g.s) + (view.cy - g.vh / 2);
-    return [Math.round(bx), Math.round(by)];
+    // paper is the work area, strokes stop at its edge
+    return [Math.min(size.w, Math.max(0, Math.round(bx))), Math.min(size.h, Math.max(0, Math.round(by)))];
   }
 
   // board coords to css percent for floating cursors and inputs
@@ -428,6 +475,11 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     ctx.setTransform(dprX * g.s, 0, 0, dprY * g.s, dprX * (-(view.cx - g.vw / 2) * g.s + g.ox), dprY * (-(view.cy - g.vh / 2) * g.s + g.oy));
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
+    // clipping to the paper so wide brushes and glow never bleed past the edge
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, size.w, size.h);
+    ctx.clip();
     // photo first so strokes trace over it
     if (bg && bgImg.current?.src === bg.src) {
       const f = fitBg(bg.w, bg.h, size.w, size.h);
@@ -445,6 +497,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         ctx.restore();
       }
     }
+    ctx.restore();
     ctx.globalCompositeOperation = "source-over";
   }
 
@@ -653,6 +706,34 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     };
   }, []);
 
+  // zoom helpers shared by buttons, minimap and keyboard
+  function zoomIn() {
+    setView((v) => clampView({ ...v, s: v.s * 1.25 }));
+  }
+  function zoomOut() {
+    setView((v) => clampView({ ...v, s: v.s / 1.25 }));
+  }
+  function resetView() {
+    setView({ s: 1, cx: Math.round(size.w / 2), cy: Math.round(size.h / 2) });
+  }
+
+  // plus/minus zooms, zero resets, ignored while typing
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+      if (e.key === "+" || e.key === "=") zoomIn();
+      else if (e.key === "-" || e.key === "_") zoomOut();
+      else if (e.key === "0" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        resetView();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size]);
+
   // snapshot before an ai edit replaces the canvas, one-tap restore
   const [editBackup, setEditBackup] = useState<DrawOp[] | null>(null);
 
@@ -795,6 +876,15 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   }
 
   function onMove(e: React.PointerEvent) {
+    // live readout follows the pointer even when not drawing
+    if (!panStart.current) {
+      const box = boxRef.current;
+      if (box) {
+        const r = box.getBoundingClientRect();
+        const p = toBoardPx(e.clientX, e.clientY, r);
+        setCursor((prev) => (prev && prev[0] === p[0] && prev[1] === p[1] ? prev : p));
+      }
+    }
     // panning moves the view, not the drawing
     if (panStart.current) {
       const dx = e.clientX - panStart.current.x;
@@ -1510,6 +1600,37 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // minimap shows once zoomed or panned away
   const zoomed = view.s > 1.02 || Math.abs(view.cx - size.w / 2) > 1 || Math.abs(view.cy - size.h / 2) > 1;
 
+  // ruler ticks for the visible viewport, projected to screen px
+  const ruler = (() => {
+    const cw = Math.max(1, cssSize.w);
+    const ch = Math.max(1, cssSize.h);
+    const g = viewGeom(cw, ch);
+    if (!(g.s > 0)) return { top: [] as { x: number; label: string; dim: boolean; minor: boolean }[], side: [] as { y: number; label: string; dim: boolean; minor: boolean }[] };
+    const step = niceStep(80 / g.s);
+    const minor = step / 5;
+    const left = view.cx - g.vw / 2;
+    const top = view.cy - g.vh / 2;
+    const sx = (bx: number) => (bx - left) * g.s + g.ox;
+    const sy = (by: number) => (by - top) * g.s + g.oy;
+    const t: { x: number; label: string; dim: boolean; minor: boolean }[] = [];
+    for (let bx = Math.floor((left - g.ox / g.s) / minor) * minor; bx <= left + (cw - g.ox) / g.s + minor; bx += minor) {
+      const x = sx(Math.round(bx));
+      if (x < -20 || x > cw + 20) continue;
+      const isMajor = Math.abs(bx / step - Math.round(bx / step)) < 1e-6;
+      const bb = Math.round(bx);
+      t.push({ x, label: isMajor ? fmtUnit(bb, rulerUnit) : "", dim: bb < 0 || bb > size.w, minor: !isMajor });
+    }
+    const s: { y: number; label: string; dim: boolean; minor: boolean }[] = [];
+    for (let by = Math.floor((top - g.oy / g.s) / minor) * minor; by <= top + (ch - g.oy) / g.s + minor; by += minor) {
+      const y = sy(Math.round(by));
+      if (y < -20 || y > ch + 20) continue;
+      const isMajor = Math.abs(by / step - Math.round(by / step)) < 1e-6;
+      const bb = Math.round(by);
+      s.push({ y, label: isMajor ? fmtUnit(bb, rulerUnit) : "", dim: bb < 0 || bb > size.h, minor: !isMajor });
+    }
+    return { top: t, side: s };
+  })();
+
   // moving the view from a minimap tap or drag
   function minimapGo(e: React.PointerEvent) {
     const el = e.currentTarget as SVGSVGElement;
@@ -1528,6 +1649,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
+        onPointerLeave={() => setCursor(null)}
         onPointerCancel={() => {
           panStart.current = null;
           setDraft(null);
@@ -1536,7 +1658,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         {mode === "brush-ops" ? (
           <canvas ref={canvasRef} className="pointer-events-none h-full w-full" />
         ) : (
-          <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className="pointer-events-none h-full w-full bg-white">
+          <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className="pointer-events-none h-full w-full overflow-hidden bg-white">
             {bg && bgFit && <image href={bg.src} x={bgFit.x} y={bgFit.y} width={bgFit.w} height={bgFit.h} preserveAspectRatio="xMidYMid meet" />}
             {shownOps.map((o, i) => opNode(o, i))}
             {draftOp && opNode(draftOp, "draft", true)}
@@ -1582,9 +1704,50 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         )}
       </div>
 
+      {/* rulers: top shows x, right shows y, capped to the paper viewport */}
+      <div className="pointer-events-none absolute left-0 right-7 top-0 z-10 h-7 overflow-hidden border-b border-gray-200/70 bg-white/60 backdrop-blur-sm dark:border-neutral-700/70 dark:bg-neutral-900/60" aria-hidden="true">
+        {ruler.top.map((t, i) => (
+          <div key={i} className="absolute top-0 h-full" style={{ left: t.x }}>
+            <div className={`w-px ${t.minor ? "h-1.5 bg-gray-300 dark:bg-neutral-600" : "h-2.5 bg-gray-400 dark:bg-neutral-500"} ${t.dim ? "opacity-40" : ""}`} />
+            {!t.minor && (
+              <span className={`ml-0.5 block text-[9px] tabular-nums leading-tight text-gray-500 dark:text-gray-400 ${t.dim ? "opacity-40" : ""}`}>{t.label}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="pointer-events-none absolute bottom-0 right-0 top-7 z-10 w-7 overflow-hidden border-l border-gray-200/70 bg-white/60 backdrop-blur-sm dark:border-neutral-700/70 dark:bg-neutral-900/60" aria-hidden="true">
+        {ruler.side.map((t, i) => (
+          <div key={i} className="absolute left-0 w-full" style={{ top: t.y }}>
+            <div className={`h-px ${t.minor ? "w-1.5 bg-gray-300 dark:bg-neutral-600" : "w-2.5 bg-gray-400 dark:bg-neutral-500"} ${t.dim ? "opacity-40" : ""}`} />
+            {!t.minor && (
+              <span className={`mt-0.5 block truncate text-[9px] tabular-nums leading-tight text-gray-500 dark:text-gray-400 ${t.dim ? "opacity-40" : ""}`}>{t.label}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* live x,y readout with unit picker */}
+      <div className="pointer-events-auto absolute bottom-20 left-4 z-20 flex items-center gap-2 rounded-2xl border border-gray-200 bg-white/95 px-2.5 py-1.5 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+        <span className="text-[11px] tabular-nums text-gray-600 dark:text-gray-300" aria-live="off">
+          {cursor ? `x ${fmtUnit(cursor[0], rulerUnit)}, y ${fmtUnit(cursor[1], rulerUnit)}` : `— , —`}
+        </span>
+        <select
+          value={rulerUnit}
+          onChange={(e) => pickUnit(e.target.value as RulerUnit)}
+          title="ruler units"
+          aria-label="ruler units"
+          className="rounded-lg border border-gray-200 bg-transparent px-1 py-0.5 text-[11px] outline-none dark:border-neutral-700"
+        >
+          <option value="px">px</option>
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="in">in</option>
+        </select>
+      </div>
+
       {/* minimap in the corner once zoomed */}
       {zoomed && (
-        <div className="absolute right-4 top-20 z-20 w-36 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+        <div className="absolute right-10 top-20 z-20 w-36 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
           <svg
             viewBox={`0 0 ${size.w} ${size.h}`}
             className="block h-28 w-full cursor-pointer touch-none"
@@ -1610,10 +1773,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           </svg>
           <div className="flex items-center justify-between border-t border-gray-100 px-2 py-1 dark:border-neutral-700">
             <button
-              onClick={() => setView((v) => clampView({ ...v, s: v.s * 1.25 }))}
+              onClick={zoomIn}
               className="rounded p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
               aria-label="zoom in"
-              title="zoom in"
+              title="zoom in (+)"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M12 5v14M5 12h14" />
@@ -1621,26 +1784,53 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             </button>
             <span className="text-[11px] tabular-nums text-gray-500 dark:text-gray-400">{Math.round(view.s * 100)}%</span>
             <button
-              onClick={() => setView((v) => clampView({ ...v, s: v.s / 1.25 }))}
+              onClick={zoomOut}
               className="rounded p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
               aria-label="zoom out"
-              title="zoom out"
+              title="zoom out (-)"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M5 12h14" />
               </svg>
             </button>
             <button
-              onClick={() => setView({ s: 1, cx: Math.round(size.w / 2), cy: Math.round(size.h / 2) })}
+              onClick={resetView}
               className="rounded p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
               aria-label="reset view"
-              title="reset view"
+              title="reset view (ctrl+0)"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />
               </svg>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* always-visible zoom pill, minimap only shows once zoomed */}
+      {!zoomed && (
+        <div className="absolute bottom-24 right-10 z-20 flex items-center gap-1 rounded-2xl border border-gray-200 bg-white/95 px-1.5 py-1 shadow-xl backdrop-blur sm:bottom-4 dark:border-neutral-700 dark:bg-neutral-900">
+          <button
+            onClick={zoomOut}
+            className="rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+            aria-label="zoom out"
+            title="zoom out (-)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M5 12h14" />
+            </svg>
+          </button>
+          <span className="min-w-11 text-center text-[11px] tabular-nums text-gray-500 dark:text-gray-400">{Math.round(view.s * 100)}%</span>
+          <button
+            onClick={zoomIn}
+            className="rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+            aria-label="zoom in"
+            title="zoom in (+)"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
         </div>
       )}
 
@@ -1661,6 +1851,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         />
         <span className="rounded-full border border-gray-200 px-2 py-0.5 text-xs text-gray-600 dark:border-neutral-700 dark:text-gray-300">
           {mode === "svg" ? "svg" : "sketch"}
+        </span>
+        {/* read-only paper badge, size is fixed at create */}
+        <span className="hidden text-xs text-gray-500 sm:inline dark:text-gray-400" title="paper size">
+          {sizeLabel(size)}
         </span>
         <button
           onClick={() => setShareOpen(true)}

@@ -25,6 +25,13 @@ export function cleanSize(w: unknown, h: unknown): BoardSize {
   };
 }
 
+// matching a size to its preset name, else custom
+export function sizeLabel(size: BoardSize): string {
+  const hit = SIZE_PRESETS.find((p) => p.w === size.w && p.h === size.h);
+  const name = hit ? hit.label : "Custom";
+  return `${name} · ${size.w} × ${size.h}`;
+}
+
 export type Tool = "brush" | "eraser" | "line" | "rect" | "circle" | "text" | "hand" | "ellipse" | "triangle" | "star" | "arrow" | "dropper";
 export type Mode = "brush-ops" | "svg";
 

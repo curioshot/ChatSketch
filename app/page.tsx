@@ -144,6 +144,18 @@ export default function Dashboard() {
   const [sizeId, setSizeId] = useState("square");
   const [customW, setCustomW] = useState("1000");
   const [customH, setCustomH] = useState("1000");
+  // two-step flow: pick mode first, then paper
+  const [pickStep, setPickStep] = useState<1 | 2>(1);
+  const [pendingMode, setPendingMode] = useState<Mode | null>(null);
+  function openPicking() {
+    setPendingMode(null);
+    setPickStep(1);
+    setPicking(true);
+  }
+  function chooseMode(mode: Mode) {
+    setPendingMode(mode);
+    setPickStep(2);
+  }
   function pickedSize() {
     if (sizeId === "custom") return cleanSize(Number(customW), Number(customH));
     const p = SIZE_PRESETS.find((s) => s.id === sizeId);
@@ -152,6 +164,8 @@ export default function Dashboard() {
   function create(mode: Mode) {
     const d = createDrawing(mode, pickedSize());
     setPicking(false);
+    setPickStep(1);
+    setPendingMode(null);
     router.push(`/board/${d.id}`);
   }
 
@@ -249,7 +263,7 @@ export default function Dashboard() {
             </svg>
           </button>
           <button
-            onClick={() => setPicking(true)}
+            onClick={() => openPicking()}
             className="flex items-center gap-2 rounded-xl bg-black px-4 py-2 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-90 dark:bg-white dark:text-black"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -267,7 +281,7 @@ export default function Dashboard() {
             <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" />
           </svg>
           <p className="text-sm text-gray-500 dark:text-gray-400">nothing here yet</p>
-          <button onClick={() => setPicking(true)} className="rounded-xl bg-black px-4 py-2 text-sm text-white transition-opacity hover:opacity-90 dark:bg-white dark:text-black">
+          <button onClick={() => openPicking()} className="rounded-xl bg-black px-4 py-2 text-sm text-white transition-opacity hover:opacity-90 dark:bg-white dark:text-black">
             make your first drawing
           </button>
         </div>
@@ -397,7 +411,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* picker asking svg or sketch */}
+      {/* two-step picker: mode first, then paper */}
       {picking && (
         <div
           className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4"
@@ -407,74 +421,92 @@ export default function Dashboard() {
             className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <h2 className="text-sm font-medium">What do you want to make?</h2>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <button
-                onClick={() => create("brush-ops")}
-                className="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 p-4 transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" />
-                  <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" />
-                </svg>
-                <span className="text-sm font-medium">Sketch</span>
-                <span className="text-xs text-gray-500 dark:text-gray-400">freehand canvas</span>
-              </button>
-              <button
-                onClick={() => create("svg")}
-                className="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 p-4 transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M12 3v18M3 12h18" />
-                </svg>
-                <span className="text-sm font-medium">SVG</span>
-                <span className="text-xs text-gray-500 dark:text-gray-400">clean vector</span>
-              </button>
-            </div>
-            {/* paper size before opening the board */}
-            <p className="mt-4 text-xs font-medium text-gray-500 dark:text-gray-400">PAPER SIZE</p>
-            <div className="mt-2 grid grid-cols-3 gap-1.5">
-              {SIZE_PRESETS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setSizeId(p.id)}
-                  className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === p.id ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
-                >
-                  {p.label}
+            {pickStep === 1 ? (
+              <>
+                <h2 className="text-sm font-medium">What do you want to make?</h2>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => chooseMode("brush-ops")}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 p-4 transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                  >
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" />
+                      <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" />
+                    </svg>
+                    <span className="text-sm font-medium">Sketch</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">freehand canvas</span>
+                  </button>
+                  <button
+                    onClick={() => chooseMode("svg")}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 p-4 transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                  >
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M12 3v18M3 12h18" />
+                    </svg>
+                    <span className="text-sm font-medium">SVG</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">clean vector</span>
+                  </button>
+                </div>
+                <button onClick={() => setPicking(false)} className="mt-3 w-full rounded-xl border border-gray-200 py-2 text-sm transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800">
+                  Cancel
                 </button>
-              ))}
-              <button
-                onClick={() => setSizeId("custom")}
-                className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === "custom" ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
-              >
-                Custom
-              </button>
-            </div>
-            {sizeId === "custom" && (
-              <div className="mt-2 flex items-center gap-2">
-                <input
-                  value={customW}
-                  onChange={(e) => setCustomW(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
-                  inputMode="numeric"
-                  aria-label="custom width"
-                  placeholder="W"
-                  className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
-                />
-                <span className="text-gray-400">×</span>
-                <input
-                  value={customH}
-                  onChange={(e) => setCustomH(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
-                  inputMode="numeric"
-                  aria-label="custom height"
-                  placeholder="H"
-                  className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
-                />
-              </div>
+              </>
+            ) : (
+              <>
+                <button onClick={() => setPickStep(1)} className="text-xs text-gray-500 transition-colors hover:text-black dark:hover:text-white" aria-label="back to mode picker">
+                  ← {pendingMode === "svg" ? "SVG" : "Sketch"} · change
+                </button>
+                <h2 className="mt-1 text-sm font-medium">Pick a paper size</h2>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                  {SIZE_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => setSizeId(p.id)}
+                      className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === p.id ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setSizeId("custom")}
+                    className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === "custom" ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
+                  >
+                    Custom
+                  </button>
+                </div>
+                {sizeId === "custom" && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      value={customW}
+                      onChange={(e) => setCustomW(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                      inputMode="numeric"
+                      aria-label="custom width"
+                      placeholder="W"
+                      className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
+                    />
+                    <span className="text-gray-400">×</span>
+                    <input
+                      value={customH}
+                      onChange={(e) => setCustomH(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                      inputMode="numeric"
+                      aria-label="custom height"
+                      placeholder="H"
+                      className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
+                    />
+                  </div>
+                )}
+                <button
+                  onClick={() => pendingMode && create(pendingMode)}
+                  className="mt-3 w-full rounded-xl bg-black py-2 text-sm text-white transition-opacity hover:opacity-90 dark:bg-white dark:text-black"
+                >
+                  Create {pendingMode === "svg" ? "SVG" : "sketch"}
+                </button>
+                <button onClick={() => setPicking(false)} className="mt-2 w-full rounded-xl border border-gray-200 py-2 text-sm transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800">
+                  Cancel
+                </button>
+              </>
             )}
-            <button onClick={() => setPicking(false)} className="mt-3 w-full rounded-xl border border-gray-200 py-2 text-sm transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800">
-              Cancel
-            </button>
           </div>
         </div>
       )}
