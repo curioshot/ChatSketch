@@ -2,11 +2,11 @@
 export type BgImage = { src: string; w: number; h: number };
 
 // fitting an image inside the board, centered
-export function fitBg(w: number, h: number): { x: number; y: number; w: number; h: number } {
-  const k = Math.min(1000 / w, 1000 / h);
+export function fitBg(w: number, h: number, bw = 1000, bh = 1000): { x: number; y: number; w: number; h: number } {
+  const k = Math.min(bw / w, bh / h);
   const fw = Math.round(w * k);
   const fh = Math.round(h * k);
-  return { x: Math.round((1000 - fw) / 2), y: Math.round((1000 - fh) / 2), w: fw, h: fh };
+  return { x: Math.round((bw - fw) / 2), y: Math.round((bh - fh) / 2), w: fw, h: fh };
 }
 
 // downscaling uploads so localStorage never chokes

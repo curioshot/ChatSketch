@@ -7,7 +7,7 @@ import { LiveblocksProvider, RoomProvider } from "@liveblocks/react";
 import LiveSync, { type Peer } from "@/app/components/LiveSync";
 import ShareModal from "@/app/components/ShareModal";
 import {
-  BOARD_SIZE as SIZE,
+  BOARD_SIZE,
   ChatMsg,
   DrawOp,
   Intent,
@@ -202,7 +202,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   // exporting the current board, svg mode offers svg only
   async function exportBoard(fmt: "pdf" | "jpg" | "png" | "svg") {
-    const drawing = { id, title: title || "Untitled", mode, ops, layers, bg: bg || undefined, chat: [], intent: "build" as const, updatedAt: 0 };
+    const drawing = { id, title: title || "Untitled", mode, size, ops, layers, bg: bg || undefined, chat: [], intent: "build" as const, updatedAt: 0 };
     try {
       if (fmt === "pdf") await downloadPdf(drawing);
       else if (fmt === "jpg") await downloadJpg(drawing);
@@ -234,6 +234,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   const panStart = useRef<{ x: number; y: number } | null>(null);
   const spaceDown = useRef(false);
   const [mode, setMode] = useState<Mode>("brush-ops");
+  // paper size picked at create, fixed for the drawing
+  const [size, setSize] = useState({ w: BOARD_SIZE, h: BOARD_SIZE });
   const [title, setTitle] = useState("Untitled");
   const [ready, setReady] = useState(false);
   // unfinished stroke shown as preview
@@ -285,8 +287,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   function clampView(v: { s: number; cx: number; cy: number }) {
     return {
       s: Math.min(8, Math.max(0.5, v.s)),
-      cx: Math.min(1200, Math.max(-200, v.cx)),
-      cy: Math.min(1200, Math.max(-200, v.cy)),
+      cx: Math.min(size.w + 200, Math.max(-200, v.cx)),
+      cy: Math.min(size.h + 200, Math.max(-200, v.cy)),
     };
   }
 
@@ -295,18 +297,19 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   // uniform meet-fit mapping shared by paint, pointer and overlays
   function viewGeom(cw: number, ch: number) {
-    const w = SIZE / view.s;
-    const s = Math.min(cw, ch) / w;
-    const ox = (cw - s * w) / 2;
-    const oy = (ch - s * w) / 2;
-    return { w, s, ox, oy };
+    const vw = size.w / view.s;
+    const vh = size.h / view.s;
+    const s = Math.min(cw / vw, ch / vh);
+    const ox = (cw - s * vw) / 2;
+    const oy = (ch - s * vh) / 2;
+    return { vw, vh, s, ox, oy };
   }
 
   // screen px to board coords through the current view
   function toBoardPx(px: number, py: number, r: DOMRect): [number, number] {
     const g = viewGeom(r.width, r.height);
-    const bx = ((px - r.left - g.ox) / g.s) + (view.cx - g.w / 2);
-    const by = ((py - r.top - g.oy) / g.s) + (view.cy - g.w / 2);
+    const bx = ((px - r.left - g.ox) / g.s) + (view.cx - g.vw / 2);
+    const by = ((py - r.top - g.oy) / g.s) + (view.cy - g.vh / 2);
     return [Math.round(bx), Math.round(by)];
   }
 
@@ -314,12 +317,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   function boardPct(x: number, y: number): { left: string; top: string } {
     const g = viewGeom(cssSize.w, cssSize.h);
     return {
-      left: `${(((x - (view.cx - g.w / 2)) * g.s + g.ox) / cssSize.w) * 100}%`,
-      top: `${(((y - (view.cy - g.w / 2)) * g.s + g.oy) / cssSize.h) * 100}%`,
+      left: `${(((x - (view.cx - g.vw / 2)) * g.s + g.ox) / cssSize.w) * 100}%`,
+      top: `${(((y - (view.cy - g.vh / 2)) * g.s + g.oy) / cssSize.h) * 100}%`,
     };
   }
 
-  // converting pointer to 0-1000 board, using coalesced points for smooth curves
+  // converting pointer to board coords, using coalesced points for smooth curves
   function eventPoints(e: React.PointerEvent): [number, number][] {
     const box = boxRef.current!;
     const r = box.getBoundingClientRect();
@@ -422,12 +425,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     // mapping board units straight to screen through zoom, pan and centering
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
-    ctx.setTransform(dprX * g.s, 0, 0, dprY * g.s, dprX * (-(view.cx - g.w / 2) * g.s + g.ox), dprY * (-(view.cy - g.w / 2) * g.s + g.oy));
+    ctx.setTransform(dprX * g.s, 0, 0, dprY * g.s, dprX * (-(view.cx - g.vw / 2) * g.s + g.ox), dprY * (-(view.cy - g.vh / 2) * g.s + g.oy));
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     // photo first so strokes trace over it
     if (bg && bgImg.current?.src === bg.src) {
-      const f = fitBg(bg.w, bg.h);
+      const f = fitBg(bg.w, bg.h, size.w, size.h);
       ctx.drawImage(bgImg.current.el, f.x, f.y, f.w, f.h);
     }
     // layers decide paint order and visibility
@@ -526,6 +529,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       setLayers(d.layers);
       setActiveLayerId(d.layers[0]?.id || "");
       setBg(d.bg || null);
+      const sz = d.size && Number.isFinite(d.size.w) && Number.isFinite(d.size.h) ? d.size : { w: BOARD_SIZE, h: BOARD_SIZE };
+      setSize(sz);
+      // starting centered on the paper, not always 500,500
+      setView({ s: 1, cx: Math.round(sz.w / 2), cy: Math.round(sz.h / 2) });
     }
     setReady(true);
     return () => window.removeEventListener("focus", refreshMeter);
@@ -535,8 +542,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   useEffect(() => {
     if (!ready) return;
     // eslint-disable-next-line react-hooks/purity -- timestamp for ordering saves
-    saveDrawing({ id, title, mode, ops, layers, bg: bg || undefined, chat: msgs, intent, updatedAt: Date.now() });
-  }, [ops, layers, bg, mode, title, msgs, intent, id, ready]);
+    saveDrawing({ id, title, mode, size, ops, layers, bg: bg || undefined, chat: msgs, intent, updatedAt: Date.now() });
+  }, [ops, layers, size, bg, mode, title, msgs, intent, id, ready]);
 
   // fitting canvas to screen with sharp retina backing
   // reruns when the canvas actually mounts (after loading) or the mode flips
@@ -562,7 +569,6 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     fix();
     window.addEventListener("resize", fix);
     return () => window.removeEventListener("resize", fix);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, mode]);
 
   // repainting when ops, layers, draft, view, mode or canvas size change
@@ -597,27 +603,31 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const px = e.clientX - r.left;
       const py = e.clientY - r.top;
       setView((v) => {
-        const w = SIZE / v.s;
-        const s = Math.min(r.width, r.height) / w;
-        const ox = (r.width - s * w) / 2;
-        const oy = (r.height - s * w) / 2;
+        const vw = size.w / v.s;
+        const vh = size.h / v.s;
+        const sc = Math.min(r.width / vw, r.height / vh);
+        const ox = (r.width - sc * vw) / 2;
+        const oy = (r.height - sc * vh) / 2;
         // board point under the cursor stays put
-        const bx = (px - ox) / s + (v.cx - w / 2);
-        const by = (py - oy) / s + (v.cy - w / 2);
+        const bx = (px - ox) / sc + (v.cx - vw / 2);
+        const by = (py - oy) / sc + (v.cy - vh / 2);
         const ns = Math.min(8, Math.max(0.5, v.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-        const nw = SIZE / ns;
-        const nss = Math.min(r.width, r.height) / nw;
-        const nox = (r.width - nss * nw) / 2;
-        const noy = (r.height - nss * nw) / 2;
+        const nw = size.w / ns;
+        const nh = size.h / ns;
+        const nsc = Math.min(r.width / nw, r.height / nh);
+        const nox = (r.width - nsc * nw) / 2;
+        const noy = (r.height - nsc * nh) / 2;
         return clampView({
           s: ns,
-          cx: bx - (px - nox) / nss + nw / 2,
-          cy: by - (py - noy) / nss + nw / 2,
+          cx: bx - (px - nox) / nsc + nw / 2,
+          cy: by - (py - noy) / nsc + nh / 2,
         });
       });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
+    // size is fixed per drawing, no need to resubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // space bar pans like in design tools, ignored while typing
@@ -694,7 +704,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // strokes actually painted, in layer order
   const shownOps = orderedVisibleOps(ops, layers);
   // fitted photo rect, shared by canvas, svg and minimap
-  const bgFit = bg ? fitBg(bg.w, bg.h) : null;
+  const bgFit = bg ? fitBg(bg.w, bg.h, size.w, size.h) : null;
 
   // per-layer stroke counts for the panel
   const layerCounts = (() => {
@@ -790,8 +800,9 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const box = boxRef.current!;
       const r = box.getBoundingClientRect();
       setView((v) => {
-        const w = SIZE / v.s;
-        const s = Math.min(r.width, r.height) / w;
+        const vw = size.w / v.s;
+        const vh = size.h / v.s;
+        const s = Math.min(r.width / vw, r.height / vh);
         return clampView({ s: v.s, cx: v.cx - dx / s, cy: v.cy - dy / s });
       });
       return;
@@ -957,9 +968,9 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   // first point of an op, where the cursor jumps to
   function opAnchor(o: DrawOp): [number, number] {
     if (o.op === "line" || o.op === "bezier" || o.op === "arrow") return o.from;
-    if (o.op === "polyline") return o.points[0] || [500, 500];
+    if (o.op === "polyline") return o.points[0] || [Math.round(size.w / 2), Math.round(size.h / 2)];
     if (o.op === "circle" || o.op === "rect" || o.op === "text" || o.op === "ellipse" || o.op === "triangle" || o.op === "star") return o.center;
-    return [500, 500];
+    return [Math.round(size.w / 2), Math.round(size.h / 2)];
   }
   // chat scroll container for autoscroll
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1095,14 +1106,16 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     else done();
   }
 
-  async function sendText(q: string) {
+  async function sendText(q: string, asIntent?: Intent) {
     if (busy) return;
+    // mcq answers always travel as plan, even after switching to build
+    const useIntent = asIntent || intent;
     const nextMsgs: ChatMsg[] = [...msgs, { me: true, text: q }];
     setMsgs(nextMsgs);
     setBusy(true);
     // staged status so waiting never looks frozen
     setBusyStage("understanding…");
-    stageTimers.current.push(window.setTimeout(() => setBusyStage(intent === "plan" ? "planning questions…" : "sketching strokes…"), 1500));
+    stageTimers.current.push(window.setTimeout(() => setBusyStage(useIntent === "plan" ? "planning questions…" : "sketching strokes…"), 1500));
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
@@ -1115,7 +1128,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         body: JSON.stringify({
           prompt: q,
           mode,
-          intent,
+          intent: useIntent,
+          size: { w: size.w, h: size.h },
           // trimmed canvas so the ai can edit what exists
           canvas: ops.slice(-40).map((o) =>
             o.op === "svg"
@@ -1138,13 +1152,13 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       const data = await res.json();
       // provenance tag so the chat shows real data, not mystery replies
       const via = `${data.source || cfg.provider || "mock"} / ${String(cfg.model || meterModel || "?").split("/").pop()}`;
-      if (intent === "plan") {
+      if (useIntent === "plan") {
         const questions = Array.isArray(data.questions)
           ? (data.questions as PlanQuestion[])
           : [];
         setMsgs((m) => [
           ...m,
-          { me: false, text: String(data.plan || "no plan came back, try again"), questions, done: false, via },
+          { me: false, text: String(data.plan || "no plan came back, try again"), questions, done: false, via, kind: "plan" as const },
         ]);
       } else {
         applyBuildResult(data as DrawResult, via);
@@ -1205,13 +1219,13 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
               setRedoStack([]);
               setFrameLabel("Doodle edited");
               // flashing the cursor where the new artwork lands
-              setAiCursor({ x: 500, y: 500 });
+              setAiCursor({ x: Math.round(size.w / 2), y: Math.round(size.h / 2) });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
               setMsgs((m) => [...m, { me: false, text: `updated the artwork${demo}`, via }]);
             } else {
               pushOp({ op: "svg", tool: "brush", markup: clean });
               setFrameLabel("Doodle drew");
-              setAiCursor({ x: 500, y: 500 });
+              setAiCursor({ x: Math.round(size.w / 2), y: Math.round(size.h / 2) });
               opTimers.current.push(window.setTimeout(() => setAiCursor(null), 800));
               setMsgs((m) => [...m, { me: false, text: `added 1 artwork${demo}`, via }]);
             }
@@ -1267,7 +1281,14 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   function submitAnswers(msgIndex: number, summary: string) {
     if (!summary.trim() || busy) return;
     setMsgs((m) => m.map((msg, i) => (i === msgIndex ? { ...msg, done: true } : msg)));
-    setTimeout(() => sendText(summary), 0);
+    setTimeout(() => sendText(summary, "plan"), 0);
+  }
+
+  // one tap from an agreed plan straight into drawing it
+  function buildThisPlan(planText: string) {
+    if (busy) return;
+    setIntent("build");
+    setTimeout(() => sendText(`Draw this. Agreed plan: ${planText.slice(0, 800)}`, "build"), 0);
   }
 
   // screenshotting the board for the vision loop, small jpeg
@@ -1275,7 +1296,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     try {
       if (mode === "svg") {
         const c = await rasterize(
-          opsToSvg({ id, title, mode, ops, layers, bg: bg || undefined, chat: [], intent: "build", updatedAt: 0 }),
+          opsToSvg({ id, title, mode, size, ops, layers, bg: bg || undefined, chat: [], intent: "build", updatedAt: 0 }),
           768
         );
         return c.toDataURL("image/jpeg", 0.8);
@@ -1330,6 +1351,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           prompt: lastReq.slice(0, 500),
           mode,
           intent: "refine",
+          size: { w: size.w, h: size.h },
           image: shot,
           canvas: ops.slice(-40).map((o) =>
             o.op === "svg"
@@ -1479,17 +1501,18 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   const draftOp = draft ? draftToOp({ ...draft, ...(draft.kind === "free" && draft.points.length < 2 ? { points: [...draft.points, draft.points[0]] } : {}) } as Draft) : null;
 
   // svg viewport follows zoom and pan
-  const vbW = SIZE / view.s;
-  const viewBox = `${view.cx - vbW / 2} ${view.cy - vbW / 2} ${vbW} ${vbW}`;
+  const vw = size.w / view.s;
+  const vh = size.h / view.s;
+  const viewBox = `${view.cx - vw / 2} ${view.cy - vh / 2} ${vw} ${vh}`;
   // minimap shows once zoomed or panned away
-  const zoomed = view.s > 1.02 || Math.abs(view.cx - 500) > 1 || Math.abs(view.cy - 500) > 1;
+  const zoomed = view.s > 1.02 || Math.abs(view.cx - size.w / 2) > 1 || Math.abs(view.cy - size.h / 2) > 1;
 
   // moving the view from a minimap tap or drag
   function minimapGo(e: React.PointerEvent) {
     const el = e.currentTarget as SVGSVGElement;
     const r = el.getBoundingClientRect();
-    const bx = ((e.clientX - r.left) / r.width) * SIZE;
-    const by = ((e.clientY - r.top) / r.height) * SIZE;
+    const bx = ((e.clientX - r.left) / r.width) * size.w;
+    const by = ((e.clientY - r.top) / r.height) * size.h;
     setView((v) => clampView({ ...v, cx: Math.round(bx), cy: Math.round(by) }));
   }
 
@@ -1560,7 +1583,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       {zoomed && (
         <div className="absolute right-4 top-20 z-20 w-36 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
           <svg
-            viewBox={`0 0 ${SIZE} ${SIZE}`}
+            viewBox={`0 0 ${size.w} ${size.h}`}
             className="block h-28 w-full cursor-pointer touch-none"
             onPointerDown={(e) => {
               (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
@@ -1573,10 +1596,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             {bg && bgFit && <image href={bg.src} x={bgFit.x} y={bgFit.y} width={bgFit.w} height={bgFit.h} />}
             {shownOps.map((o, i) => opNode(o, `m${i}`))}
             <rect
-              x={view.cx - vbW / 2}
-              y={view.cy - vbW / 2}
-              width={vbW}
-              height={vbW}
+              x={view.cx - vw / 2}
+              y={view.cy - vh / 2}
+              width={vw}
+              height={vh}
               fill="rgba(0,0,0,0.08)"
               stroke="#888"
               strokeWidth={8}
@@ -1605,7 +1628,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
               </svg>
             </button>
             <button
-              onClick={() => setView({ s: 1, cx: 500, cy: 500 })}
+              onClick={() => setView({ s: 1, cx: Math.round(size.w / 2), cy: Math.round(size.h / 2) })}
               className="rounded p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
               aria-label="reset view"
               title="reset view"
@@ -1708,7 +1731,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
       {/* live sync: storage snapshots plus presence, only while sharing */}
       {live && (
-        <LiveSync ops={ops} layers={layers} applyDoc={applyRemoteDoc} boxRef={boxRef} view={view} onPeers={setPeers} />
+        <LiveSync ops={ops} layers={layers} applyDoc={applyRemoteDoc} boxRef={boxRef} view={view} size={size} onPeers={setPeers} />
       )}
 
       {/* remote cursors */}
@@ -1910,6 +1933,18 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
                 {!m.me && m.questions && m.questions.length > 0 && !m.done && (
                   <McqSet questions={m.questions} onSubmit={(summary) => submitAnswers(i, summary)} />
                 )}
+                {!m.me && m.kind === "plan" && (
+                  <button
+                    onClick={() => buildThisPlan(m.text)}
+                    disabled={busy}
+                    className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-black py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-white dark:text-black"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M7 17 17 7M8 7h9v9" />
+                    </svg>
+                    Build this plan
+                  </button>
+                )}
               </div>
             ))}
             {busy && (
@@ -2066,7 +2101,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
                 title={`restore: ${f.label}`}
                 className="w-28 shrink-0 overflow-hidden rounded-xl border border-gray-200 transition-all hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 dark:border-neutral-700"
               >
-                <svg viewBox="0 0 1000 1000" className="h-16 w-full bg-white dark:bg-neutral-800">
+                <svg viewBox={`0 0 ${size.w} ${size.h}`} className="h-16 w-full bg-white dark:bg-neutral-800">
                   {orderedVisibleOps(f.ops, f.layers).slice(0, 30).map((o, i) => opNode(o, `t${f.id}-${i}`))}
                 </svg>
                 <span className="block truncate px-1.5 py-1 text-left text-[11px]">

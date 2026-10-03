@@ -35,6 +35,7 @@ export default function LiveSync({
   applyDoc,
   boxRef,
   view,
+  size,
   onPeers,
 }: {
   ops: DrawOp[];
@@ -42,6 +43,7 @@ export default function LiveSync({
   applyDoc: (ops: DrawOp[], layers: Layer[]) => void;
   boxRef: React.RefObject<HTMLDivElement | null>;
   view: { s: number; cx: number; cy: number };
+  size: { w: number; h: number };
   onPeers: (p: Peer[]) => void;
 }) {
   const updatePresence = useUpdateMyPresence();
@@ -93,14 +95,15 @@ export default function LiveSync({
     if (!el) return;
     const move = (e: PointerEvent) => {
       const r = el.getBoundingClientRect();
-      const w = 1000 / view.s;
-      const s = Math.min(r.width, r.height) / w;
-      const ox = (r.width - s * w) / 2;
-      const oy = (r.height - s * w) / 2;
+      const vw = size.w / view.s;
+      const vh = size.h / view.s;
+      const s = Math.min(r.width / vw, r.height / vh);
+      const ox = (r.width - s * vw) / 2;
+      const oy = (r.height - s * vh) / 2;
       updatePresence({
         cursor: {
-          x: Math.round((e.clientX - r.left - ox) / s + (view.cx - w / 2)),
-          y: Math.round((e.clientY - r.top - oy) / s + (view.cy - w / 2)),
+          x: Math.round((e.clientX - r.left - ox) / s + (view.cx - vw / 2)),
+          y: Math.round((e.clientY - r.top - oy) / s + (view.cy - vh / 2)),
         },
         name: me.name,
         color: me.color,
@@ -113,7 +116,7 @@ export default function LiveSync({
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerleave", leave);
     };
-  }, [boxRef, view, me, updatePresence]);
+  }, [boxRef, view, size, me, updatePresence]);
 
   // reporting who else is here
   useEffect(() => {

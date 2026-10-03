@@ -3,8 +3,6 @@ import { arrowHead, brushPasses, orderedVisibleOps, starPoints, triPoints, type 
 import { fitBg } from "./image";
 import { sanitizeSvgInner } from "./svg";
 
-const S = 1000;
-
 // white for eraser so exports match what the board shows
 function ink(o: DrawOp): string {
   if (o.op === "svg") return "#000000";
@@ -32,7 +30,7 @@ export function opsToSvg(d: Drawing): string {
   const photo = d.bg
     ? (() => {
         const b = d.bg as { src: string; w: number; h: number };
-        const f = fitBg(b.w, b.h);
+        const f = fitBg(b.w, b.h, d.size.w, d.size.h);
         return `<image href="${b.src}" x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}" preserveAspectRatio="xMidYMid meet"/>`;
       })()
     : "";
@@ -73,7 +71,7 @@ export function opsToSvg(d: Drawing): string {
         .join("");
     })
     .join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${S} ${S}" width="${S}" height="${S}"><rect width="${S}" height="${S}" fill="#ffffff"/>${photo}${inner}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.size.w} ${d.size.h}" width="${d.size.w}" height="${d.size.h}"><rect width="${d.size.w}" height="${d.size.h}" fill="#ffffff"/>${photo}${inner}</svg>`;
 }
 
 // rasterizing through the svg file so injected artwork exports too

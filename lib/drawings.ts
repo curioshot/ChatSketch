@@ -1,5 +1,29 @@
-// shared types, keeping board at 0-1000 everywhere
+// shared types, board units are integers with origin top-left
 export const BOARD_SIZE = 1000;
+
+export type BoardSize = { w: number; h: number };
+
+// paper presets, a-series keeps the 1 to root-2 ratio
+export const SIZE_PRESETS: { id: string; label: string; w: number; h: number }[] = [
+  { id: "square", label: "Square", w: 1000, h: 1000 },
+  { id: "wide", label: "Wide 16:9", w: 1280, h: 720 },
+  { id: "a4p", label: "A4 portrait", w: 707, h: 1000 },
+  { id: "a4l", label: "A4 landscape", w: 1000, h: 707 },
+  { id: "a3p", label: "A3 portrait", w: 1000, h: 1414 },
+  { id: "a3l", label: "A3 landscape", w: 1414, h: 1000 },
+  { id: "a2p", label: "A2 portrait", w: 1414, h: 2000 },
+  { id: "a2l", label: "A2 landscape", w: 2000, h: 1414 },
+];
+
+// clamping custom sizes so boards stay sane
+export function cleanSize(w: unknown, h: unknown): BoardSize {
+  const cw = Math.round(Number(w));
+  const ch = Math.round(Number(h));
+  return {
+    w: Number.isFinite(cw) ? Math.min(4000, Math.max(100, cw)) : 1000,
+    h: Number.isFinite(ch) ? Math.min(4000, Math.max(100, ch)) : 1000,
+  };
+}
 
 export type Tool = "brush" | "eraser" | "line" | "rect" | "circle" | "text" | "hand" | "ellipse" | "triangle" | "star" | "arrow" | "dropper";
 export type Mode = "brush-ops" | "svg";
@@ -20,7 +44,7 @@ export type DrawOp =
 // one named group of strokes, painted in array order
 export type Layer = { id: string; name: string; visible: boolean; keys: string[] };
 
-export type ChatMsg = { me: boolean; text: string; questions?: PlanQuestion[]; done?: boolean; via?: string };
+export type ChatMsg = { me: boolean; text: string; questions?: PlanQuestion[]; done?: boolean; via?: string; kind?: "plan" | "build" };
 export type Intent = "plan" | "build" | "refine";
 
 // one clarifying question from plan mode
@@ -36,6 +60,7 @@ export type Drawing = {
   id: string;
   title: string;
   mode: Mode;
+  size: BoardSize;
   ops: DrawOp[];
   layers: Layer[];
   bg?: { src: string; w: number; h: number };
@@ -51,7 +76,7 @@ export function blankLayer(name: string): Layer {
   return { id: crypto.randomUUID(), name, visible: true, keys: [] };
 }
 
-// old saves lack chat/intent/layers/keys, filling defaults so nothing breaks
+// old saves lack newer fields, filling defaults so nothing breaks
 function normalize(d: Drawing): Drawing {
   const ops = Array.isArray(d.ops) ? d.ops : [];
   for (const o of ops) {
@@ -62,10 +87,14 @@ function normalize(d: Drawing): Drawing {
   const known = new Set(layers.flatMap((l) => l.keys));
   const orphans = ops.map((o) => o.key as string).filter((k) => k && !known.has(k));
   if (orphans.length) layers = [{ ...layers[0], keys: [...layers[0].keys, ...orphans] }, ...layers.slice(1)];
+  const size = d.size && Number.isFinite(d.size.w) && Number.isFinite(d.size.h)
+    ? cleanSize(d.size.w, d.size.h)
+    : { w: BOARD_SIZE, h: BOARD_SIZE };
   return {
     ...d,
     ops,
     layers,
+    size,
     chat: Array.isArray(d.chat) ? d.chat : [],
     intent: d.intent === "plan" ? "plan" : "build",
   };
@@ -170,12 +199,13 @@ function saveAll(list: Drawing[]) {
   }
 }
 
-// making a fresh drawing after user picks mode
-export function createDrawing(mode: Mode): Drawing {
+// making a fresh drawing after user picks mode and size
+export function createDrawing(mode: Mode, size: BoardSize = { w: BOARD_SIZE, h: BOARD_SIZE }): Drawing {
   const d: Drawing = {
     id: crypto.randomUUID(),
     title: mode === "svg" ? "Untitled SVG" : "Untitled sketch",
     mode,
+    size: cleanSize(size.w, size.h),
     ops: [],
     layers: [blankLayer("Layer 1")],
     chat: [],

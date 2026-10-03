@@ -6,10 +6,13 @@ import SettingsModal from "./components/SettingsModal";
 import Splash from "./components/Splash";
 import Logo from "./components/Logo";
 import {
+  BOARD_SIZE,
   Drawing,
   Mode,
+  SIZE_PRESETS,
   arrowHead,
   brushPasses,
+  cleanSize,
   createDrawing,
   loadAll,
   orderedVisibleOps,
@@ -29,9 +32,11 @@ const iconBtn =
 // small preview, showing first strokes only so cards stay fast
 function Preview({ d }: { d: Drawing }) {
   const ops = orderedVisibleOps(d.ops, d.layers).slice(0, 20);
-  const bg = d.bg ? { src: d.bg.src, ...fitBg(d.bg.w, d.bg.h) } : null;
+  const bg = d.bg ? { src: d.bg.src, ...fitBg(d.bg.w, d.bg.h, d.size?.w || 1000, d.size?.h || 1000) } : null;
+  const sw = d.size?.w || 1000;
+  const sh = d.size?.h || 1000;
   return (
-    <svg viewBox="0 0 1000 1000" className="h-36 w-full border-b border-gray-100 bg-white dark:border-neutral-800 dark:bg-neutral-800">
+    <svg viewBox={`0 0 ${sw} ${sh}`} className="h-36 w-full border-b border-gray-100 bg-white dark:border-neutral-800 dark:bg-neutral-800">
       {bg && <image href={bg.src} x={bg.x} y={bg.y} width={bg.w} height={bg.h} />}
       {ops.map((o, i) => {
         if (o.op === "svg")
@@ -135,9 +140,17 @@ export default function Dashboard() {
     setDark(next.theme === "dark");
   }
 
-  // creating after user picks svg or sketch, then opening it
+  // creating after user picks mode, with the chosen paper size
+  const [sizeId, setSizeId] = useState("square");
+  const [customW, setCustomW] = useState("1000");
+  const [customH, setCustomH] = useState("1000");
+  function pickedSize() {
+    if (sizeId === "custom") return cleanSize(Number(customW), Number(customH));
+    const p = SIZE_PRESETS.find((s) => s.id === sizeId);
+    return p ? { w: p.w, h: p.h } : { w: BOARD_SIZE, h: BOARD_SIZE };
+  }
   function create(mode: Mode) {
-    const d = createDrawing(mode);
+    const d = createDrawing(mode, pickedSize());
     setPicking(false);
     router.push(`/board/${d.id}`);
   }
@@ -284,7 +297,7 @@ export default function Dashboard() {
                     <p className="truncate text-sm font-medium">{d.title}</p>
                   )}
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {d.mode === "svg" ? "svg" : "sketch"} - {new Date(d.updatedAt).toLocaleString()}
+                    {d.mode === "svg" ? "svg" : "sketch"} · {d.size?.w || 1000}×{d.size?.h || 1000} · {new Date(d.updatedAt).toLocaleString()}
                   </p>
                 </div>
                 {/* three dot menu with open, rename, delete */}
@@ -419,6 +432,46 @@ export default function Dashboard() {
                 <span className="text-xs text-gray-500 dark:text-gray-400">clean vector</span>
               </button>
             </div>
+            {/* paper size before opening the board */}
+            <p className="mt-4 text-xs font-medium text-gray-500 dark:text-gray-400">PAPER SIZE</p>
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              {SIZE_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setSizeId(p.id)}
+                  className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === p.id ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <button
+                onClick={() => setSizeId("custom")}
+                className={`rounded-xl border px-2 py-1.5 text-xs transition-colors ${sizeId === "custom" ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black" : "border-gray-200 hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800"}`}
+              >
+                Custom
+              </button>
+            </div>
+            {sizeId === "custom" && (
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  value={customW}
+                  onChange={(e) => setCustomW(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                  inputMode="numeric"
+                  aria-label="custom width"
+                  placeholder="W"
+                  className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
+                />
+                <span className="text-gray-400">×</span>
+                <input
+                  value={customH}
+                  onChange={(e) => setCustomH(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
+                  inputMode="numeric"
+                  aria-label="custom height"
+                  placeholder="H"
+                  className="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-black dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-white"
+                />
+              </div>
+            )}
             <button onClick={() => setPicking(false)} className="mt-3 w-full rounded-xl border border-gray-200 py-2 text-sm transition-colors hover:bg-gray-50 dark:border-neutral-700 dark:hover:bg-neutral-800">
               Cancel
             </button>
