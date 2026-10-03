@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { LiveblocksProvider, RoomProvider } from "@liveblocks/react";
 import LiveSync, { type Peer } from "@/app/components/LiveSync";
 import ShareModal from "@/app/components/ShareModal";
@@ -10,6 +10,7 @@ import {
   BOARD_SIZE,
   ChatMsg,
   DrawOp,
+  Grid,
   Intent,
   Layer,
   Mode,
@@ -18,9 +19,14 @@ import {
   arrowHead,
   blankLayer,
   brushPasses,
+  cleanGrid,
   getDrawing,
+  hitOp,
+  moveOp,
+  opBBox,
   orderedVisibleOps,
   saveDrawing,
+  scaleOp,
   sizeLabel,
   starPoints,
   triPoints,
@@ -225,7 +231,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   // exporting the current board, svg mode offers svg only
   async function exportBoard(fmt: "pdf" | "jpg" | "png" | "svg") {
-    const drawing = { id, title: title || "Untitled", mode, size, ops, layers, bg: bg || undefined, chat: [], intent: "build" as const, updatedAt: 0 };
+    const drawing = { id, title: title || "Untitled", mode, size, ops, layers, grid, bg: bg || undefined, chat: [], intent: "build" as const, updatedAt: 0 };
     try {
       if (fmt === "pdf") await downloadPdf(drawing);
       else if (fmt === "jpg") await downloadJpg(drawing);
@@ -248,6 +254,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   const [width, setWidth] = useState(5);
   // filling shapes or just outline
   const [fill, setFill] = useState(false);
+  // stroke translucency for new strokes, 1 is solid
+  const [opacity, setOpacity] = useState(1);
   // brush tip style, pen is the plain default
   const [brushKind, setBrushKind] = useState("pen");
   const [brushOpen, setBrushOpen] = useState(false);
@@ -276,12 +284,140 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   }
   // live cursor in board coords, for the readout
   const [cursor, setCursor] = useState<[number, number] | null>(null);
+  // label for the next timeline frame, set by every edit
+  const [frameLabel, setFrameLabel] = useState("opened");
+  const frameTimer = useRef(0);
+  // selected stroke keys for the select tool
+  const [selected, setSelected] = useState<string[]>([]);
+  // live move/resize drags, holding the pre-drag snapshot so drags never drift
+  const dragRef = useRef<
+    | null
+    | { kind: "move"; start: [number, number]; orig: DrawOp[] }
+    | { kind: "resize"; fx: number; fy: number; mx: number; my: number; orig: DrawOp[] }
+  >(null);
+
+  // topmost selectable stroke under a board point
+  function pickOp(p: [number, number]): DrawOp | null {
+    const g = viewGeom(Math.max(1, cssSize.w), Math.max(1, cssSize.h));
+    const tol = 10 / Math.max(0.2, g.s);
+    const vis = orderedVisibleOps(ops, layers);
+    for (let i = vis.length - 1; i >= 0; i--) if (hitOp(vis[i], p, tol)) return vis[i];
+    return null;
+  }
+
+  // bbox around given strokes, in board coords
+  function boxOf(list: DrawOp[]): [number, number, number, number] | null {
+    let box: [number, number, number, number] | null = null;
+    for (const o of list) {
+      const b = opBBox(o);
+      if (!b) continue;
+      box = box ? [Math.min(box[0], b[0]), Math.min(box[1], b[1]), Math.max(box[2], b[2]), Math.max(box[3], b[3])] : [...b];
+    }
+    return box;
+  }
+
+  // bbox around the current selection
+  function selBox(): [number, number, number, number] | null {
+    const set = new Set(selected);
+    return boxOf(ops.filter((o) => o.key && set.has(o.key)));
+  }
+
+  // removing the selection, strokes and layer refs together
+  function deleteSelected() {
+    if (!selected.length) return;
+    const gone = new Set(selected);
+    setOps(ops.filter((o) => !gone.has(o.key as string)));
+    setLayers(layers.map((l) => ({ ...l, keys: l.keys.filter((k) => !gone.has(k)) })));
+    setRedoStack([]);
+    setSelected([]);
+    dragRef.current = null;
+    setFrameLabel("deleted");
+  }
+
+  // copying the selection with an offset onto the active layer
+  function duplicateSelected() {
+    const set = new Set(selected);
+    const copies = ops
+      .filter((o) => o.key && set.has(o.key))
+      .map((o) => ({ ...moveOp(o, 40, 40, size.w, size.h), key: crypto.randomUUID() }));
+    if (!copies.length) return;
+    const keys = copies.map((o) => o.key as string);
+    setOps([...ops, ...copies]);
+    const at = Math.max(0, layers.findIndex((l) => l.id === activeRef.current));
+    setLayers(layers.map((l, i) => (i === at ? { ...l, keys: [...l.keys, ...keys] } : l)));
+    setSelected(keys);
+    setRedoStack([]);
+    setFrameLabel("duplicated");
+  }
+
+  // starting a corner resize, fixed corner stays put
+  function startResize(e: React.PointerEvent, fx: number, fy: number, mx: number, my: number) {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const set = new Set(selected);
+    dragRef.current = { kind: "resize", fx, fy, mx, my, orig: ops.filter((o) => o.key && set.has(o.key)) };
+  }
+
+  // replaying the resize snapshot with the pointer corner
+  function resizeTo(e: React.PointerEvent) {
+    const drag = dragRef.current;
+    if (!drag || drag.kind !== "resize") return;
+    const box = boxRef.current;
+    if (!box) return;
+    const p = toBoardPx(e.clientX, e.clientY, box.getBoundingClientRect());
+    const dx0 = drag.mx - drag.fx;
+    const dy0 = drag.my - drag.fy;
+    const sx = Math.abs(dx0) > 4 ? (p[0] - drag.fx) / dx0 : 1;
+    const sy = Math.abs(dy0) > 4 ? (p[1] - drag.fy) / dy0 : 1;
+    // no flips, staying sane
+    const cx = Math.min(20, Math.max(0.05, sx));
+    const cy = Math.min(20, Math.max(0.05, sy));
+    const scaled = new Map(
+      drag.orig.map((o) => [o.key as string, scaleOp(o, drag.fx, drag.fy, cx, cy, size.w, size.h)])
+    );
+    setOps((prev) => prev.map((o) => (o.key && scaled.has(o.key) ? (scaled.get(o.key) as DrawOp) : o)));
+  }
+
+  // ending a corner resize
+  function endResize() {
+    if (dragRef.current?.kind === "resize") {
+      dragRef.current = null;
+      setFrameLabel("resized");
+    }
+  }
   // active pan drag in screen px, space bar held or not
   const panStart = useRef<{ x: number; y: number } | null>(null);
   const spaceDown = useRef(false);
+  // live pointers for two-finger pinch zoom
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ d: number; s: number; bx: number; by: number } | null>(null);
+
+  // zooming from a pinch midpoint, board point under the fingers stays put
+  function pinchTo(midX: number, midY: number, nd: number) {
+    const box = boxRef.current;
+    const st = pinchRef.current;
+    if (!box || !st || nd < 10) return;
+    const r = box.getBoundingClientRect();
+    const ns = Math.min(8, Math.max(0.5, (st.s * nd) / st.d));
+    const vw = size.w / ns;
+    const vh = size.h / ns;
+    const sc = Math.min(r.width / vw, r.height / vh);
+    const ox = (r.width - sc * vw) / 2;
+    const oy = (r.height - sc * vh) / 2;
+    setView(
+      clampView({
+        s: ns,
+        cx: st.bx - (midX - r.left - ox) / sc + vw / 2,
+        cy: st.by - (midY - r.top - oy) / sc + vh / 2,
+      })
+    );
+  }
   const [mode, setMode] = useState<Mode>("brush-ops");
   // paper size picked at create, fixed for the drawing
   const [size, setSize] = useState({ w: BOARD_SIZE, h: BOARD_SIZE });
+  // paper grid overlay, saved per drawing
+  const [grid, setGrid] = useState<Grid>({ size: 100, show: false, snap: false });
   const [title, setTitle] = useState("Untitled");
   const [ready, setReady] = useState(false);
   // unfinished stroke shown as preview
@@ -356,8 +492,9 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const g = viewGeom(r.width, r.height);
     const bx = ((px - r.left - g.ox) / g.s) + (view.cx - g.vw / 2);
     const by = ((py - r.top - g.oy) / g.s) + (view.cy - g.vh / 2);
-    // paper is the work area, strokes stop at its edge
-    return [Math.min(size.w, Math.max(0, Math.round(bx))), Math.min(size.h, Math.max(0, Math.round(by)))];
+    // snap pulls input onto the grid, then the paper edge stops it
+    const snapV = (v: number) => (grid.snap ? Math.round(v / grid.size) * grid.size : Math.round(v));
+    return [Math.min(size.w, Math.max(0, snapV(bx))), Math.min(size.h, Math.max(0, snapV(by)))];
   }
 
   // board coords to css percent for floating cursors and inputs
@@ -385,9 +522,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   function strokeOp(ctx: CanvasRenderingContext2D, o: DrawOp) {
     // injected svg only lives in svg mode, canvas never sees it
     if (o.op === "svg") return;
-    // multi-pass styles like neon glow
+    // stroke translucency multiplies every brush pass
+    const extra = o.opacity ?? 1;
     for (const pass of brushPasses(o)) {
-      paintPass(ctx, o, pass.wMul, pass.alpha);
+      paintPass(ctx, o, pass.wMul, pass.alpha * extra);
     }
     ctx.globalAlpha = 1;
   }
@@ -594,6 +732,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       setBg(d.bg || null);
       const sz = d.size && Number.isFinite(d.size.w) && Number.isFinite(d.size.h) ? d.size : { w: BOARD_SIZE, h: BOARD_SIZE };
       setSize(sz);
+      setGrid(cleanGrid(d.grid));
       // starting centered on the paper, not always 500,500
       setView({ s: 1, cx: Math.round(sz.w / 2), cy: Math.round(sz.h / 2) });
     }
@@ -605,8 +744,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   useEffect(() => {
     if (!ready) return;
     // eslint-disable-next-line react-hooks/purity -- timestamp for ordering saves
-    saveDrawing({ id, title, mode, size, ops, layers, bg: bg || undefined, chat: msgs, intent, updatedAt: Date.now() });
-  }, [ops, layers, size, bg, mode, title, msgs, intent, id, ready]);
+    saveDrawing({ id, title, mode, size, ops, layers, grid, bg: bg || undefined, chat: msgs, intent, updatedAt: Date.now() });
+  }, [ops, layers, size, grid, bg, mode, title, msgs, intent, id, ready]);
 
   // fitting canvas to screen with sharp retina backing
   // reruns when the canvas actually mounts (after loading) or the mode flips
@@ -727,22 +866,25 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     setView({ s: 1, cx: Math.round(size.w / 2), cy: Math.round(size.h / 2) });
   }
 
-  // plus/minus zooms, zero resets, ignored while typing
+  // plus/minus zooms, zero resets, delete drops the selection, ignored while typing
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT") return;
       if (e.key === "+" || e.key === "=") zoomIn();
       else if (e.key === "-" || e.key === "_") zoomOut();
       else if (e.key === "0" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         resetView();
+      } else if ((e.key === "Delete" || e.key === "Backspace") && tool === "select" && selected.length) {
+        e.preventDefault();
+        deleteSelected();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size]);
+  }, [size, tool, selected]);
 
   // snapshot before an ai edit replaces the canvas, one-tap restore
   const [editBackup, setEditBackup] = useState<DrawOp[] | null>(null);
@@ -853,6 +995,24 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   function onDown(e: React.PointerEvent) {
     if ((e.target as HTMLElement).tagName === "INPUT") return;
+    // tracking every finger for pinch zoom
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 2) {
+      const [a, b] = [...pointersRef.current.values()];
+      const box = boxRef.current;
+      if (box) {
+        const r = box.getBoundingClientRect();
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        const [bx, by] = toBoardPx(mx, my, r);
+        pinchRef.current = { d: Math.hypot(a.x - b.x, a.y - b.y), s: view.s, bx, by };
+      }
+      // pinch takes over, dropping any half-started stroke or drag
+      panStart.current = null;
+      dragRef.current = null;
+      setDraft(null);
+      return;
+    }
     // locked while doodle works, panning still allowed
     const wantPan = tool === "hand" || spaceDown.current || e.button === 1;
     if (busy && !wantPan) return;
@@ -861,6 +1021,27 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     if (wantPan) {
       if (e.button === 1) e.preventDefault();
       panStart.current = { x: e.clientX, y: e.clientY };
+      return;
+    }
+    // select tool picks strokes, dragging a picked one moves the selection
+    if (tool === "select") {
+      const [sp] = eventPoints(e);
+      const hit = pickOp(sp);
+      if (!hit || !hit.key) {
+        setSelected([]);
+        dragRef.current = null;
+        return;
+      }
+      const key = hit.key;
+      if (e.shiftKey) {
+        setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+        return;
+      }
+      const cur = selected.includes(key) ? selected : [key];
+      setSelected(cur);
+      const set = new Set(cur);
+      dragRef.current = { kind: "move", start: sp, orig: ops.filter((o) => o.key && set.has(o.key)) };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       return;
     }
     const [p] = eventPoints(e);
@@ -886,6 +1067,15 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   }
 
   function onMove(e: React.PointerEvent) {
+    // following fingers for pinch zoom
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointersRef.current.size === 2) {
+        const [a, b] = [...pointersRef.current.values()];
+        pinchTo((a.x + b.x) / 2, (a.y + b.y) / 2, Math.hypot(a.x - b.x, a.y - b.y));
+        return;
+      }
+    }
     // live readout follows the pointer even when not drawing
     if (!panStart.current) {
       const box = boxRef.current;
@@ -894,6 +1084,19 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         const p = toBoardPx(e.clientX, e.clientY, r);
         setCursor((prev) => (prev && prev[0] === p[0] && prev[1] === p[1] ? prev : p));
       }
+    }
+    // live move drag replays the snapshot with the pointer delta
+    const drag = dragRef.current;
+    if (drag && drag.kind === "move") {
+      const pts = eventPoints(e);
+      const p = pts[pts.length - 1];
+      const dx = p[0] - drag.start[0];
+      const dy = p[1] - drag.start[1];
+      if (dx || dy) {
+        const moved = new Map(drag.orig.map((o) => [o.key as string, moveOp(o, dx, dy, size.w, size.h)]));
+        setOps((prev) => prev.map((o) => (o.key && moved.has(o.key) ? (moved.get(o.key) as DrawOp) : o)));
+      }
+      return;
     }
     // panning moves the view, not the drawing
     if (panStart.current) {
@@ -926,17 +1129,29 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     });
   }
 
-  function onUp() {
+  function onUp(e?: React.PointerEvent) {
     panStart.current = null;
+    // one finger lifted, pinch is over
+    if (e) pointersRef.current.delete(e.pointerId);
+    else pointersRef.current.clear();
+    if (pinchRef.current && pointersRef.current.size < 2) pinchRef.current = null;
+    // ending a move drag, strokes already sit at the pointer
+    if (dragRef.current?.kind === "move") {
+      dragRef.current = null;
+      setFrameLabel("moved");
+      return;
+    }
     if (!draft) return;
+    // current translucency rides on every new stroke
+    const sheer = opacity < 1 ? { opacity } : {};
     // single tap with brush leaves a dot
     if (draft.kind === "free" && draft.points.length === 1) {
       const [p] = draft.points;
       const t: Tool = tool === "eraser" ? "eraser" : "brush";
-      pushOp({ op: "line", tool: t, color, strokeWidth: t === "eraser" ? width * 3 : width, from: p, to: p, ...(t === "brush" && brushKind !== "pen" ? { brush: brushKind } : {}) });
+      pushOp({ op: "line", tool: t, color, strokeWidth: t === "eraser" ? width * 3 : width, from: p, to: p, ...(t === "brush" && brushKind !== "pen" ? { brush: brushKind } : {}), ...sheer });
     } else {
       const op = draftToOp(draft);
-      if (op) pushOp(op);
+      if (op) pushOp({ ...op, ...sheer });
     }
     setFrameLabel("you drew");
     setDraft(null);
@@ -1030,7 +1245,6 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   type Frame = { id: number; at: number; label: string; ops: DrawOp[]; layers: Layer[] };
   const [frames, setFrames] = useState<Frame[]>([]);
   const [timelineOpen, setTimelineOpen] = useState(false);
-  const [frameLabel, setFrameLabel] = useState("opened");  const frameTimer = useRef(0);
   // live mirrors for the debounced snapshotter
   const opsRef = useRef<DrawOp[]>([]);
   const layersRef = useRef<Layer[]>([]);
@@ -1233,6 +1447,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           mode,
           intent: useIntent,
           size: { w: size.w, h: size.h },
+          grid,
           // trimmed canvas so the ai can edit what exists
           canvas: ops.slice(-40).map((o) =>
             o.op === "svg"
@@ -1288,6 +1503,9 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     say?: unknown;
     replace?: unknown;
     source?: unknown;
+    deleteKeys?: unknown;
+    duplicate?: unknown;
+    grid?: unknown;
   };
 
   // shared applier for build and vision-refine replies
@@ -1298,6 +1516,26 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     const demo = data.source === "mock" ? " (demo mode — add an API key for real drawings)" : "";
     // spoken reply for greetings and questions
     if (say) setMsgs((m) => [...m, { me: false, text: say, via }]);
+    // grid change the ai asked for
+    if (data.grid && typeof data.grid === "object") setGrid(cleanGrid(data.grid));
+    // strokes the ai asked to remove, by key
+    const del = Array.isArray(data.deleteKeys) ? data.deleteKeys.map(String) : [];
+    if (del.length) {
+      const gone = new Set(del);
+      setOps((prev) => prev.filter((o) => !gone.has(o.key as string)));
+      setLayers((prev) => prev.map((l) => ({ ...l, keys: l.keys.filter((k) => !gone.has(k)) })));
+      setRedoStack([]);
+    }
+    // strokes the ai asked to copy, arriving with fresh keys
+    const dups = Array.isArray(data.duplicate) ? (data.duplicate as DrawOp[]) : [];
+    for (const o of dups) pushOp(o);
+    if (del.length || dups.length) {
+      setFrameLabel("Doodle edited");
+      setMsgs((m) => [
+        ...m,
+        { me: false, text: `${del.length ? `removed ${del.length}` : ""}${del.length && dups.length ? ", " : ""}${dups.length ? `copied ${dups.length}` : ""}${demo}`, via },
+      ]);
+    }
         // svg mode injects raw markup straight onto the screen
         const rawSvg = typeof data.svg === "string" ? data.svg : "";
         if (mode === "svg" && rawSvg.trim()) {
@@ -1399,7 +1637,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     try {
       if (mode === "svg") {
         const c = await rasterize(
-          opsToSvg({ id, title, mode, size, ops, layers, bg: bg || undefined, chat: [], intent: "build", updatedAt: 0 }),
+          opsToSvg({ id, title, mode, size, ops, layers, grid, bg: bg || undefined, chat: [], intent: "build", updatedAt: 0 }),
           768
         );
         return c.toDataURL("image/jpeg", 0.8);
@@ -1455,6 +1693,7 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           mode,
           intent: "refine",
           size: { w: size.w, h: size.h },
+          grid,
           image: shot,
           canvas: ops.slice(-40).map((o) =>
             o.op === "svg"
@@ -1545,8 +1784,12 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
 
   // one svg node per op, used by board and draft overlay
   function opNode(o: DrawOp, i: number | string, dashed = false) {
+    // stroke translucency wraps the whole op
+    const extra = o.opacity ?? 1;
+    const wrap = (node: ReactNode) =>
+      extra >= 1 ? node : <g key={i} opacity={extra}>{node}</g>;
     if (o.op === "svg")
-      return <g key={i} dangerouslySetInnerHTML={{ __html: sanitizeSvgInner(o.markup) }} />;
+      return wrap(<g key={i} dangerouslySetInnerHTML={{ __html: sanitizeSvgInner(o.markup) }} />);
     const col = o.tool === "eraser" ? "white" : o.color;
     const dash = dashed ? { strokeDasharray: "12 8" } : {};
     // one node per brush pass so glow styles layer up
@@ -1584,8 +1827,8 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       }
       return <text key={k} x={o.center[0]} y={o.center[1]} fontSize={o.size} fill={col} textAnchor="middle" dominantBaseline="central">{o.content}</text>;
     };
-    if (passes.length === 1) return one(passes[0].wMul, passes[0].alpha, i);
-    return <g key={i}>{passes.map((p, k) => one(p.wMul, p.alpha, `${i}-${k}`))}</g>;
+    if (passes.length === 1) return wrap(one(passes[0].wMul, passes[0].alpha, i));
+    return wrap(<g key={i}>{passes.map((p, k) => one(p.wMul, p.alpha, `${i}-${k}`))}</g>);
   }
 
   if (!ready) return <div className="p-6 text-sm text-gray-500 dark:text-gray-400">loading...</div>;
@@ -1641,6 +1884,29 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     return { top: t, side: s };
   })();
 
+  // selection box in screen px for the overlay and handles
+  const selPx = (() => {
+    if (tool !== "select") return null;
+    const b = selBox();
+    if (!b) return null;
+    const cw = Math.max(1, cssSize.w);
+    const ch = Math.max(1, cssSize.h);
+    const g = viewGeom(cw, ch);
+    const X = (bx: number) => (bx - (view.cx - g.vw / 2)) * g.s + g.ox;
+    const Y = (by: number) => (by - (view.cy - g.vh / 2)) * g.s + g.oy;
+    return { x: X(b[0]), y: Y(b[1]), w: Math.max(2, X(b[2]) - X(b[0])), h: Math.max(2, Y(b[3]) - Y(b[1])), box: b };
+  })();
+
+  // paper rect in screen px for the grid overlay
+  const paperPx = (() => {
+    const cw = Math.max(1, cssSize.w);
+    const ch = Math.max(1, cssSize.h);
+    const g = viewGeom(cw, ch);
+    const X = (bx: number) => (bx - (view.cx - g.vw / 2)) * g.s + g.ox;
+    const Y = (by: number) => (by - (view.cy - g.vh / 2)) * g.s + g.oy;
+    return { x: X(0), y: Y(0), w: size.w * g.s, h: size.h * g.s, cell: grid.size * g.s };
+  })();
+
   // moving the view from a minimap tap or drag
   function minimapGo(e: React.PointerEvent) {
     const el = e.currentTarget as SVGSVGElement;
@@ -1655,13 +1921,15 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
       {/* whole screen is board, handlers sit here so drafts work in both modes */}
       <div
         ref={boxRef}
-        className={`absolute inset-0 touch-none select-none ${tool === "hand" ? "cursor-grab active:cursor-grabbing" : "cursor-crosshair"}`}
+        className={`absolute inset-0 touch-none select-none ${tool === "hand" ? "cursor-grab active:cursor-grabbing" : tool === "select" ? "cursor-default" : "cursor-crosshair"}`}
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
         onPointerLeave={() => setCursor(null)}
         onPointerCancel={() => {
           panStart.current = null;
+          pointersRef.current.clear();
+          pinchRef.current = null;
           setDraft(null);
         }}
       >
@@ -1720,6 +1988,92 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
           </div>
         )}
       </div>
+
+      {/* selection box with corner handles */}
+      {selPx && (
+        <div
+          className="pointer-events-none absolute z-10 border-2 border-dashed border-blue-500"
+          style={{ left: selPx.x, top: selPx.y, width: selPx.w, height: selPx.h }}
+          aria-hidden="true"
+        >
+          {(
+            [
+              { c: "nw", x: 0, y: 0, fx: selPx.box[2], fy: selPx.box[3], cur: "cursor-nwse-resize" },
+              { c: "ne", x: 1, y: 0, fx: selPx.box[0], fy: selPx.box[3], cur: "cursor-nesw-resize" },
+              { c: "sw", x: 0, y: 1, fx: selPx.box[2], fy: selPx.box[1], cur: "cursor-nesw-resize" },
+              { c: "se", x: 1, y: 1, fx: selPx.box[0], fy: selPx.box[1], cur: "cursor-nwse-resize" },
+            ] as const
+          ).map((h) => (
+            <button
+              key={h.c}
+              onPointerDown={(e) => startResize(e, h.fx, h.fy, h.x ? selPx.box[2] : selPx.box[0], h.y ? selPx.box[3] : selPx.box[1])}
+              onPointerMove={resizeTo}
+              onPointerUp={endResize}
+              onPointerCancel={endResize}
+              aria-label={`resize from ${h.c}`}
+              title="drag to resize"
+              className={`pointer-events-auto absolute h-3 w-3 rounded-sm border-2 border-blue-500 bg-white shadow dark:bg-neutral-900 ${h.cur}`}
+              style={{
+                left: h.x ? "100%" : "0%",
+                top: h.y ? "100%" : "0%",
+                transform: "translate(-50%, -50%)",
+                touchAction: "none",
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* selection actions, only while something is picked */}
+      {tool === "select" && selected.length > 0 && (
+        <div className="absolute bottom-24 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-2xl border border-gray-200 bg-white/95 px-2 py-1.5 shadow-xl backdrop-blur dark:border-neutral-700 dark:bg-neutral-900">
+          <span className="px-1 text-xs text-gray-500 dark:text-gray-400">{selected.length} picked</span>
+          <button
+            onClick={duplicateSelected}
+            title="copy selection"
+            aria-label="copy selection"
+            className="rounded-lg px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+          >
+            Duplicate
+          </button>
+          <button
+            onClick={deleteSelected}
+            title="delete selection"
+            aria-label="delete selection"
+            className="rounded-lg px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-red-950"
+          >
+            Delete
+          </button>
+          <button
+            onClick={() => setSelected([])}
+            title="deselect"
+            aria-label="deselect"
+            className="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* grid over the paper, hidden when cells get too tiny */}
+      {grid.show && paperPx.cell > 4 && (
+        <div
+          className="pointer-events-none absolute z-[5] overflow-hidden"
+          style={{ left: paperPx.x, top: paperPx.y, width: paperPx.w, height: paperPx.h }}
+          aria-hidden="true"
+        >
+          <div
+            className="h-full w-full"
+            style={{
+              backgroundImage:
+                "linear-gradient(to right, rgba(0,0,0,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px)",
+              backgroundSize: `${paperPx.cell}px ${paperPx.cell}px`,
+            }}
+          />
+        </div>
+      )}
 
       {/* rulers: top shows x, right shows y, capped to the paper viewport */}
       <div className="pointer-events-none absolute left-0 right-7 top-0 z-10 h-7 overflow-hidden border-b border-gray-200/70 bg-white/60 backdrop-blur-sm dark:border-neutral-700/70 dark:bg-neutral-900/60" aria-hidden="true">
@@ -2370,6 +2724,11 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             <path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-5.5v-1a1.5 1.5 0 0 1 3 0V11m0-4.5a1.5 1.5 0 0 1 3 0V12m0-3a1.5 1.5 0 0 1 3 0v5c0 4-2.5 7-6 7-2.5 0-4-1-5.5-3.5L3 13.5c-.8-1.2.7-2.6 1.9-1.7L8 14" />
           </svg>
         </button>
+        <button onClick={() => setTool("select")} title="select and move (shift adds)" className={toolBtn(tool === "select")} aria-label="select" aria-pressed={tool === "select"}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+            <path d="M5 3l14 7-6.5 1.5L9 18 5 3z" />
+          </svg>
+        </button>
         <div className="mx-1 h-6 w-px bg-gray-200 dark:bg-neutral-700" />
         <button onClick={() => setTool("line")} title="line" className={toolBtn(tool === "line")} aria-label="line" aria-pressed={tool === "line"}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2445,6 +2804,33 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
             <path d="m3 17 9 5 9-5" />
           </svg>
         </button>
+        {/* paper grid overlay, AI can flip it too through /api/draw */}
+        <button onClick={() => setGrid((g) => ({ ...g, show: !g.show }))} title="toggle grid" className={toolBtn(grid.show)} aria-label="toggle grid" aria-pressed={grid.show}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+          </svg>
+        </button>
+        {grid.show && (
+          <>
+            <button onClick={() => setGrid((g) => ({ ...g, snap: !g.snap }))} title="snap to grid" className={toolBtn(grid.snap)} aria-label="snap to grid" aria-pressed={grid.snap}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 4h4v7a3 3 0 0 0 6 0V4h4v7a7 7 0 0 1-14 0z" />
+                <path d="M12 18v3" />
+              </svg>
+            </button>
+            <select
+              value={grid.size}
+              onChange={(e) => setGrid((g) => ({ ...g, size: Number(e.target.value) || 100 }))}
+              title="grid size"
+              aria-label="grid size"
+              className="rounded-lg border border-gray-200 bg-transparent px-1 py-1 text-xs outline-none dark:border-neutral-700"
+            >
+              {[20, 50, 100, 200].map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </>
+        )}
         <button onClick={() => setTimelineOpen((v) => !v)} title="edit timeline" className={toolBtn(timelineOpen)} aria-label="edit timeline" aria-pressed={timelineOpen} aria-expanded={timelineOpen}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />
@@ -2472,6 +2858,26 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         <input type="color" value={color} onChange={(e) => setColor(e.target.value)} title="color" className="h-8 w-8 cursor-pointer rounded border border-gray-200 dark:border-neutral-700" aria-label="color" />
         <input type="range" min={1} max={40} value={width} onChange={(e) => setWidth(Number(e.target.value))} title="stroke width" className="w-20 accent-black dark:accent-white" aria-label="stroke width" />
         <span className="w-6 text-xs tabular-nums text-gray-600 dark:text-gray-300">{width}</span>
+        {/* translucency for new strokes, live on the selection too */}
+        <input
+          type="range"
+          min={5}
+          max={100}
+          value={Math.round(opacity * 100)}
+          onChange={(e) => {
+            const v = Math.min(1, Math.max(0.05, Number(e.target.value) / 100));
+            setOpacity(v);
+            if (selected.length) {
+              const set = new Set(selected);
+              const sheer = v < 1 ? { opacity: v } : { opacity: undefined };
+              setOps(ops.map((o) => (o.key && set.has(o.key) ? { ...o, ...sheer } : o)));
+            }
+          }}
+          title="stroke opacity"
+          className="w-16 accent-black dark:accent-white"
+          aria-label="stroke opacity"
+        />
+        <span className="w-9 text-xs tabular-nums text-gray-600 dark:text-gray-300">{Math.round(opacity * 100)}%</span>
         {/* brush tip picker */}
         <div className="relative">
           <button

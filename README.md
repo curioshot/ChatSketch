@@ -44,7 +44,7 @@ Add your key to `.env.local` (default is NVIDIA):
 ```
 NVIDIA_API_KEY=nvapi-xxxx
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_MODEL=meta/llama-3.1-70b-instruct
+NVIDIA_MODEL=nvidia/llama-3.1-nemotron-70b-instruct
 ```
 
 Or paste keys in the in-app Settings popup instead. Supports NVIDIA, OpenAI, Anthropic, Gemini, or a custom OpenAI-compatible endpoint. Keys stay in your browser and are only sent to our own `/api` routes per request.

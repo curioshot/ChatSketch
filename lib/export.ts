@@ -36,10 +36,15 @@ export function opsToSvg(d: Drawing): string {
     : "";
   const inner = orderedVisibleOps(d.ops, d.layers)
     .map((o) => {
-      if (o.op === "svg") return sanitizeSvgInner(o.markup);
+      if (o.op === "svg") {
+        const inner = sanitizeSvgInner(o.markup);
+        const extra = o.opacity ?? 1;
+        return extra >= 1 ? inner : `<g opacity="${extra}">${inner}</g>`;
+      }
       const c = ink(o);
       // one element per brush pass so glow styles survive export
-      return brushPasses(o)
+      const extra = o.opacity ?? 1;
+      const inner = brushPasses(o)
         .map((p) => {
           const w = o.op === "text" ? 0 : o.strokeWidth * p.wMul;
           const a = p.alpha === 1 ? "" : ` opacity="${p.alpha}"`;
@@ -69,6 +74,7 @@ export function opsToSvg(d: Drawing): string {
           return `<text x="${o.center[0]}" y="${o.center[1]}" font-size="${o.size}" font-family="system-ui, sans-serif" fill="${c}" text-anchor="middle" dominant-baseline="central">${escXml(o.content)}</text>`;
         })
         .join("");
+      return extra >= 1 ? inner : `<g opacity="${extra}">${inner}</g>`;
     })
     .join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${d.size.w} ${d.size.h}" width="${d.size.w}" height="${d.size.h}"><rect width="${d.size.w}" height="${d.size.h}" fill="#ffffff"/>${photo}${inner}</svg>`;

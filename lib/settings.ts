@@ -26,7 +26,7 @@ export function presetBaseUrl(p: Provider): string {
 
 // sensible starting model per org, test button replaces it with the real list
 export function presetModel(p: Provider): string {
-  if (p === "nvidia") return "meta/llama-3.1-70b-instruct";
+  if (p === "nvidia") return "nvidia/llama-3.1-nemotron-70b-instruct";
   if (p === "openai") return "gpt-4o-mini";
   if (p === "anthropic") return "claude-3-5-haiku-latest";
   if (p === "gemini") return "gemini-2.0-flash";

@@ -4,7 +4,22 @@ import { NextResponse } from "next/server";
 const ENV_BASE =
   process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1";
 const ENV_MODEL =
-  process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct";
+  process.env.NVIDIA_MODEL || "nvidia/llama-3.1-nemotron-70b-instruct";
+
+// models retired by their hosts, asked-for id remaps to the live default
+const RETIRED_MODELS = new Set(["meta/llama-3.1-70b-instruct"]);
+
+// one readable line out of a provider error body
+function shortDetail(raw: string): string {
+  try {
+    const j = JSON.parse(raw);
+    const d = j.detail || j.title || j.error?.message;
+    if (d) return String(d).slice(0, 160);
+  } catch {
+    // not json, falling back to the raw slice below
+  }
+  return raw.slice(0, 160).replace(/\s+/g, " ");
+}
 const ENV_KEY = process.env.NVIDIA_API_KEY || "";
 
 // picking endpoint per provider chosen in settings
@@ -161,6 +176,22 @@ function cleanNum(n: unknown, fb: number, max: number): number {
   return Math.min(max, Math.max(1, v));
 }
 
+// translucency 0.05-1, solid when missing
+function cleanOpacity(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(1, Math.max(0.05, Math.round(n * 100) / 100));
+}
+
+// keeping only key strings so deletes and copies cannot touch anything else
+function cleanKeys(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((k) => String(k))
+    .filter((k) => k && k.length < 80)
+    .slice(0, 20);
+}
+
 // light server-side clean, browser does the strict pass before render
 function lightCleanSvg(s: string): string {
   let t = String(s || "");
@@ -197,46 +228,48 @@ function cleanOps(raw: unknown, bx: number, by: number): unknown[] {
     }
     const tool = m.tool === "eraser" ? "eraser" : "brush";
     const color = /^#[0-9a-fA-F]{6}$/.test(String(m.color || "")) ? String(m.color) : "#ff0000";
+    const opacity = cleanOpacity(m.opacity);
+    const sheer = opacity < 1 ? { opacity } : {};
     const base = { op: kind, tool, color };
     if (kind === "text") {
       const content = String(m.content || "").trim().slice(0, 120);
       if (!content) continue;
-      out.push({ ...base, center: cleanPoint(m.center, [cx, cy], bx, by), size: cleanNum(m.size, 40, 200), content });
+      out.push({ ...base, ...sheer, center: cleanPoint(m.center, [cx, cy], bx, by), size: cleanNum(m.size, 40, 200), content });
       continue;
     }
     const strokeWidth = cleanNum(m.strokeWidth, 5, 60);
     if (kind === "line") {
-      out.push({ ...base, strokeWidth, from: cleanPoint(m.from, [cx - 50, cy], bx, by), to: cleanPoint(m.to, [cx + 50, cy], bx, by) });
+      out.push({ ...base, ...sheer, strokeWidth, from: cleanPoint(m.from, [cx - 50, cy], bx, by), to: cleanPoint(m.to, [cx + 50, cy], bx, by) });
     } else if (kind === "polyline") {
       const pts = Array.isArray(m.points)
         ? m.points.slice(0, 200).map((p) => cleanPoint(p, [cx, cy], bx, by))
         : [];
       if (pts.length < 2) continue;
-      out.push({ ...base, strokeWidth, points: pts });
+      out.push({ ...base, ...sheer, strokeWidth, points: pts });
     } else if (kind === "bezier") {
       out.push({
-        ...base, strokeWidth,
+        ...base, ...sheer, strokeWidth,
         from: cleanPoint(m.from, [cx - 50, cy], bx, by),
         cp1: cleanPoint(m.cp1, [cx - 20, cy - 30], bx, by),
         cp2: cleanPoint(m.cp2, [cx + 20, cy + 30], bx, by),
         to: cleanPoint(m.to, [cx + 50, cy], bx, by),
       });
     } else if (kind === "circle") {
-      out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), r: cleanNum(m.r, 60, big) });
+      out.push({ ...base, ...sheer, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), r: cleanNum(m.r, 60, big) });
     } else if (kind === "ellipse") {
-      out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), rx: cleanNum(m.rx, 80, big), ry: cleanNum(m.ry, 50, big) });
+      out.push({ ...base, ...sheer, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), rx: cleanNum(m.rx, 80, big), ry: cleanNum(m.ry, 50, big) });
     } else if (kind === "triangle") {
       out.push({
-        ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by),
+        ...base, ...sheer, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by),
         w: cleanNum(m.w, 120, big), h: cleanNum(m.h, 100, big),
       });
     } else if (kind === "star") {
-      out.push({ ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), r: cleanNum(m.r, 70, big) });
+      out.push({ ...base, ...sheer, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by), r: cleanNum(m.r, 70, big) });
     } else if (kind === "arrow") {
-      out.push({ ...base, strokeWidth, from: cleanPoint(m.from, [cx - 60, cy], bx, by), to: cleanPoint(m.to, [cx + 60, cy], bx, by) });
+      out.push({ ...base, ...sheer, strokeWidth, from: cleanPoint(m.from, [cx - 60, cy], bx, by), to: cleanPoint(m.to, [cx + 60, cy], bx, by) });
     } else {
       out.push({
-        ...base, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by),
+        ...base, ...sheer, strokeWidth, fill: m.fill === true, center: cleanPoint(m.center, [cx, cy], bx, by),
         w: cleanNum(m.w, 120, big), h: cleanNum(m.h, 80, big),
       });
     }
@@ -244,8 +277,23 @@ function cleanOps(raw: unknown, bx: number, by: number): unknown[] {
   return out;
 }
 
+// cloning a canvas stroke with an offset and a fresh key, for "copy that shape"
+function shiftOp(o: Record<string, unknown>, dx: number, dy: number, bx: number, by: number): Record<string, unknown> | null {
+  const kind = String(o.op || "");
+  if (kind === "svg") return { ...o, key: crypto.randomUUID() };
+  if (!["line", "polyline", "bezier", "circle", "rect", "text", "ellipse", "triangle", "star", "arrow"].includes(kind)) return null;
+  const mv = (p: unknown) => {
+    if (!Array.isArray(p)) return p;
+    return cleanPoint([Number(p[0]) + dx, Number(p[1]) + dy], [0, 0], bx, by);
+  };
+  const m: Record<string, unknown> = { ...o, key: crypto.randomUUID() };
+  for (const k of ["from", "to", "center", "cp1", "cp2"]) if (k in m) m[k] = mv(m[k]);
+  if (Array.isArray(m.points)) m.points = (m.points as unknown[]).slice(0, 200).map(mv);
+  return m;
+}
+
 // pulling JSON out even if model adds markdown fences
-function extractJson(text: string): { ops?: unknown; plan?: unknown; questions?: unknown; say?: unknown; replace?: unknown } {
+function extractJson(text: string): { ops?: unknown; plan?: unknown; questions?: unknown; say?: unknown; replace?: unknown; deleteKeys?: unknown; duplicate?: unknown; grid?: unknown } {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = (fenced ? fenced[1] : text).trim();
   const start = raw.indexOf("{");
@@ -272,10 +320,12 @@ export async function POST(req: Request) {
   const bw = Math.min(4000, Math.max(100, Math.round(Number(rawSize?.w)) || 1000));
   const bh = Math.min(4000, Math.max(100, Math.round(Number(rawSize?.h)) || 1000));
 
-  // client settings win, env is fallback
+  // client settings win, env is fallback, retired ids remap to the live default
   const provider = String(body.provider || "nvidia");
   const key = String(body.apiKey || "").trim() || ENV_KEY;
-  const model = String(body.model || "").trim() || ENV_MODEL;
+  const hadKey = Boolean(key);
+  const asked = String(body.model || "").trim();
+  const model = (asked && !RETIRED_MODELS.has(asked) ? asked : "") || ENV_MODEL;
   const base = resolveBase(provider, String(body.baseUrl || ""));
   const intent = body.intent === "plan" ? "plan" : body.intent === "refine" ? "refine" : ("build" as const);
   const history = cleanHistory(body.history);
@@ -385,6 +435,7 @@ Each op is one of:
 Keep coords 0-${bw}, 0-${bh}, max 20 ops, centered composition.
 Current canvas ops: ${canvas.length ? JSON.stringify(canvas).slice(0, 6000) : "empty"}.
 If the user asks to change the existing drawing (bigger, move, recolor, remove, add to it), return the COMPLETE new ops array including kept strokes, and set "replace": true. Otherwise return only the new strokes with "replace": false. Kept strokes must keep their exact "key" so layers survive.
+To delete strokes say "deleteKeys": ["key", ...]. To copy strokes say "duplicate": {"keys": [...], "dx": 120, "dy": 0}. Add "opacity": 0.05-1 for translucent strokes, omit for solid. To change the paper grid say "grid": {"size": 100, "show": true, "snap": true} with only what changes.
 If the user greets you, asks who you are, or asks anything non-drawing, return {"mode":"${mode}","ops":[],"say":"your short answer as Doodle"} instead.`;
 
   // screenshot for the vision loop, data url jpeg
@@ -409,7 +460,7 @@ Each op is one of:
 {"op":"triangle","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"w":160,"h":140}
 {"op":"star","tool":"brush","color":"#ff0000","strokeWidth":5,"fill":false,"center":[x,y],"r":90}
 {"op":"arrow","tool":"brush","color":"#ff0000","strokeWidth":5,"from":[x,y],"to":[x,y]}
-Keep coords 0-${bw}, 0-${bh}, max 30 ops. Return the COMPLETE corrected canvas: keep good strokes with exact keys, fix proportions, alignment, gaps and colors to match the request. Always set "replace": true. If nothing needs fixing, echo the canvas ops unchanged.`;
+Keep coords 0-${bw}, 0-${bh}, max 30 ops. Return the COMPLETE corrected canvas: keep good strokes with exact keys, fix proportions, alignment, gaps and colors to match the request. Always set "replace": true. If nothing needs fixing, echo the canvas ops unchanged. Add "opacity": 0.05-1 for translucent strokes. Say "grid": {"size": 100, "show": true, "snap": true} to change the paper grid.`;
 
   try {
     // svg mode gets raw markup, everything else gets ops json
@@ -459,12 +510,31 @@ Keep coords 0-${bw}, 0-${bh}, max 30 ops. Return the COMPLETE corrected canvas: 
       });
 
       if (!res.ok) {
-        // provider error, falling back so UI does not break
+        // provider refused (bad key, dead model, quota), saying so beats silent demo
+        if (hadKey) {
+          const raw = await res.text().catch(() => "");
+          const why = shortDetail(raw);
+          const hint = `Doodle could not draw: provider error ${res.status}${why ? ` — ${why}` : ""}. Check the key and model in Settings.`;
+          if (intent === "plan") {
+            return NextResponse.json({ mode, ops: [], plan: hint, questions: [], source: provider });
+          }
+          return NextResponse.json({ mode, ops: [], say: hint.slice(0, 500), source: provider });
+        }
+        // no key, falling back so UI does not break
         return NextResponse.json({ mode, ops: fitMock(mockOps(prompt), bw, bh), source: "mock" });
       }
 
       const data = await res.json();
       text = data?.choices?.[0]?.message?.content || "";
+    }
+
+    // provider answered with nothing usable, saying so when a key was given
+    if (!text && hadKey) {
+      const hint = "Doodle could not draw: the provider gave nothing back. Try again or pick another model in Settings.";
+      if (intent === "plan") {
+        return NextResponse.json({ mode, ops: [], plan: hint, questions: [], source: provider });
+      }
+      return NextResponse.json({ mode, ops: [], say: hint, source: provider });
     }
 
     // plan mode returns text plus mcq questions
@@ -499,12 +569,65 @@ Keep coords 0-${bw}, 0-${bh}, max 30 ops. Return the COMPLETE corrected canvas: 
     const say = typeof parsed.say === "string" ? parsed.say.trim().slice(0, 500) : "";
     // refine always replaces: the model returns the whole corrected canvas
     const replace = intent === "refine" ? ops.length > 0 : parsed.replace === true;
-    if (!ops.length && !say) {
+    // strokes the model asked to remove, by key
+    const deleteKeys = cleanKeys(parsed.deleteKeys);
+    // strokes the model asked to copy, cloned with an offset and fresh keys
+    let duplicate: unknown[] = [];
+    const dq = (parsed.duplicate || {}) as Record<string, unknown>;
+    const dupKeys = new Set(cleanKeys(dq.keys));
+    if (dupKeys.size) {
+      const numOr = (v: unknown, fb: number) => {
+        const n = Math.round(Number(v));
+        return Number.isFinite(n) ? Math.min(2000, Math.max(-2000, n)) : fb;
+      };
+      const ddx = dq.dx === undefined ? 120 : numOr(dq.dx, 120);
+      const ddy = dq.dy === undefined ? 0 : numOr(dq.dy, 0);
+      const byKey = new Map<string, unknown>();
+      for (const o of canvas) {
+        if (o && typeof o === "object") {
+          const k = String((o as Record<string, unknown>).key || "");
+          if (k) byKey.set(k, o);
+        }
+      }
+      for (const k of dupKeys) {
+        const o = byKey.get(k);
+        if (o && typeof o === "object") {
+          const c = shiftOp(o as Record<string, unknown>, ddx, ddy, bw, bh);
+          if (c) duplicate.push(c);
+        }
+      }
+      duplicate = duplicate.slice(0, 20);
+    }
+    // grid change the model asked for, merged over the current one
+    let gridEcho: unknown = undefined;
+    if (parsed.grid && typeof parsed.grid === "object") {
+      const cur = (body.grid || {}) as Record<string, unknown>;
+      const asked = parsed.grid as Record<string, unknown>;
+      const gsize = (v: unknown, fb: number) => {
+        if (v === undefined) return fb;
+        const n = Math.round(Number(v));
+        return Number.isFinite(n) ? Math.min(500, Math.max(10, n)) : fb;
+      };
+      const curSize = Math.round(Number((cur as Record<string, unknown>).size));
+      gridEcho = {
+        size: gsize(asked.size, Number.isFinite(curSize) ? Math.min(500, Math.max(10, curSize)) : 100),
+        show: asked.show === undefined ? (cur as Record<string, unknown>).show === true : asked.show === true,
+        snap: asked.snap === undefined ? (cur as Record<string, unknown>).snap === true : asked.snap === true,
+      };
+    }
+    if (!ops.length && !say && !deleteKeys.length && !duplicate.length && !gridEcho) {
       return NextResponse.json({ mode, ops: fitMock(mockOps(prompt), bw, bh), source: "mock" });
     }
-    return NextResponse.json({ mode, ops, say, replace, source: provider });
+    return NextResponse.json({ mode, ops, say, replace, deleteKeys, duplicate, grid: gridEcho, source: provider });
   } catch {
-    // network issue, still returning something drawable
+    // network issue: with a key we say so, without one we still demo something drawable
+    if (hadKey) {
+      const hint = "Doodle could not draw: could not reach the provider. Check your connection and try again.";
+      if (intent === "plan") {
+        return NextResponse.json({ mode, ops: [], plan: hint, questions: [], source: "mock" });
+      }
+      return NextResponse.json({ mode, ops: [], say: hint, source: "mock" });
+    }
     return NextResponse.json({ mode, ops: fitMock(mockOps(prompt), bw, bh), source: "mock" });
   }
 }

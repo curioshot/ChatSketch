@@ -39,8 +39,11 @@ function Preview({ d }: { d: Drawing }) {
     <svg viewBox={`0 0 ${sw} ${sh}`} className="h-36 w-full border-b border-gray-100 bg-white dark:border-neutral-800 dark:bg-neutral-800">
       {bg && <image href={bg.src} x={bg.x} y={bg.y} width={bg.w} height={bg.h} />}
       {ops.map((o, i) => {
-        if (o.op === "svg")
-          return <g key={i} dangerouslySetInnerHTML={{ __html: sanitizeSvgInner(o.markup) }} />;
+        if (o.op === "svg") {
+          const extra = o.opacity ?? 1;
+          const node = <g key={i} dangerouslySetInnerHTML={{ __html: sanitizeSvgInner(o.markup) }} />;
+          return extra >= 1 ? node : <g key={`w${i}`} opacity={extra}>{node}</g>;
+        }
         const col = o.tool === "eraser" ? "white" : o.color;
         const passes = brushPasses(o);
         const one = (wMul: number, alpha: number, k: number | string) => {
@@ -76,8 +79,12 @@ function Preview({ d }: { d: Drawing }) {
           }
           return <text key={k} x={o.center[0]} y={o.center[1]} fontSize={o.size} fill={col} textAnchor="middle" dominantBaseline="central">{o.content}</text>;
         };
-        if (passes.length === 1) return one(passes[0].wMul, passes[0].alpha, i);
-        return <g key={i}>{passes.map((p, k) => one(p.wMul, p.alpha, `${i}-${k}`))}</g>;
+        if (passes.length === 1) {
+          const n = one(passes[0].wMul, passes[0].alpha, i);
+          return (o.opacity ?? 1) >= 1 ? n : <g key={`w${i}`} opacity={o.opacity}>{n}</g>;
+        }
+        const all = <g key={i}>{passes.map((p, k) => one(p.wMul, p.alpha, `${i}-${k}`))}</g>;
+        return (o.opacity ?? 1) >= 1 ? all : <g key={`w${i}`} opacity={o.opacity}>{all}</g>;
       })}
       {ops.length === 0 && (
         <text x="500" y="520" textAnchor="middle" fontSize="48" fill="#ccc">
