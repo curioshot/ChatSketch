@@ -475,6 +475,16 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     ctx.setTransform(dprX * g.s, 0, 0, dprY * g.s, dprX * (-(view.cx - g.vw / 2) * g.s + g.ox), dprY * (-(view.cy - g.vh / 2) * g.s + g.oy));
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
+    // floating paper sheet so you can see where the work area is
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.22)";
+    ctx.shadowBlur = 40;
+    ctx.shadowOffsetY = 14;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, size.w, size.h);
+    ctx.restore();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, size.w, size.h);
     // clipping to the paper so wide brushes and glow never bleed past the edge
     ctx.save();
     ctx.beginPath();
@@ -1658,7 +1668,14 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
         {mode === "brush-ops" ? (
           <canvas ref={canvasRef} className="pointer-events-none h-full w-full" />
         ) : (
-          <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className="pointer-events-none h-full w-full overflow-hidden bg-white">
+          <svg viewBox={viewBox} preserveAspectRatio="xMidYMid meet" className="pointer-events-none h-full w-full overflow-hidden">
+            <defs>
+              <filter id="paper-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                <feDropShadow dx="0" dy="14" stdDeviation="22" floodColor="#000000" floodOpacity="0.22" />
+              </filter>
+            </defs>
+            {/* floating paper sheet so you can see where the work area is */}
+            <rect x={0} y={0} width={size.w} height={size.h} fill="#ffffff" filter="url(#paper-shadow)" />
             {bg && bgFit && <image href={bg.src} x={bgFit.x} y={bgFit.y} width={bgFit.w} height={bgFit.h} preserveAspectRatio="xMidYMid meet" />}
             {shownOps.map((o, i) => opNode(o, i))}
             {draftOp && opNode(draftOp, "draft", true)}
