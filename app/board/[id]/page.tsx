@@ -594,7 +594,9 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
   }, [bg?.src]);
 
   // scroll to zoom, anchored at the cursor
+  // waits for ready: the board box only mounts after loading
   useEffect(() => {
+    if (!ready) return;
     const el = boxRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
@@ -626,9 +628,10 @@ function BoardInner({ live, setLive, canLive }: { live: boolean; setLive: (v: bo
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-    // size is fixed per drawing, no need to resubscribe
+    // resubscribing once the drawing (and its size) has loaded
+    // clampView omitted: rebuilt every render from the same size, always fresh
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ready, size]);
 
   // space bar pans like in design tools, ignored while typing
   useEffect(() => {
